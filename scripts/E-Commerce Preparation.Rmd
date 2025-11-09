@@ -1,0 +1,971 @@
+---
+title: "E-Commerce Data Preparation"
+author: "Peter Cheng"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    css: style.css
+  pdf_document: default
+output_dir: "/Users/yufeicheng/Desktop/E-Commerce"
+geometry: margin=1in
+---
+
+> **Dataset credit:** *E-Commerce Sales Dataset — “Unlock Profits with E-Commerce Sales Data”* on Kaggle, authored by [**ANil**](https://www.kaggle.com/datasets/thedevastator/unlock-profits-with-e-commerce-sales-data).
+
+# Environment Setup
+
+Before beginning the analysis, it is essential to establish a controlled and reproducible computing environment.  
+All code was executed in **RStudio** using the **R programming language**, with libraries loaded for data cleaning.  
+The directory structure was defined to separate raw data, processed outputs, and archived files to ensure transparency and repeatability throughout the workflow.
+
+```{r loading environment & tools, include=FALSE}
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+suppressWarnings(suppressMessages({
+  library(tidyverse); library(readr); library(janitor); library(lubridate)
+  library(stringr);  library(skimr)
+}))
+
+data_dir <- "/Users/yufeicheng/Desktop/E-Commerce/E-Commerce Data/raw"               # Current csv file directory
+out_dir  <- "/Users/yufeicheng/Desktop/E-Commerce/E-Commerce Data/processed"       # Output to this new folder
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+read_csv_if <- function(fname, ...) {
+  path <- file.path(data_dir, fname)
+  if (file.exists(path)) readr::read_csv(path, show_col_types = FALSE, ...) else NULL
+}
+```
+# Data Relevance and Selection
+
+After reviewing all CSV files included in the Kaggle dataset **_Unlock Profits with E-Commerce Sales Data_** (dataset author: **Anil**), I evaluated each file’s contribution to the overall business objective — identifying the most profitable product categories, pricing patterns, and sales trends across e-commerce platforms.
+
+To ensure the analysis remains focused on metrics that directly impact profitability, only datasets containing transaction-level or financial data were retained. These include:
+
+- **Amazon_Sale_Report.csv** – the main transactional dataset containing SKU, category, quantity, and profit-related details  
+- **P_L_March_2021.csv** and **May_2022.csv** – monthly profit and loss statements used for temporal profitability comparisons  
+- **intl_sales.csv (International Sales Report)** – captures international transaction details across customers, SKUs, and gross amounts  
+
+The following datasets were **excluded** due to limited relevance to profitability or product performance analysis:
+
+- **Expense_IIGF.csv** – contains operational expense and manual cash log data not directly tied to product-level revenue  
+- **Cloud_Warehouse_Comparison.csv** – provides infrastructure and storage metrics unrelated to e-commerce transactions or profitability trends 
+- **Sale_Report.csv** – despite its title, this file does **not** contain transactional or financial sales data. Instead, it functions as an **inventory dataset**, listing stock quantities and product attributes (e.g., size, color, category) without any pricing, revenue, or cost variables. Because it tracks available inventory rather than recorded sales or profit activity, its content is **misaligned with the project’s profitability objective**, and the file name is therefore somewhat misleading relative to its actual structure and purpose.
+
+These three datasets were **archived** in an `archive_unused/` subdirectory within the `data` folder for reproducibility and potential future audit but were **not imported into the active RStudio workflow**.  
+This filtering step ensures that all data sources used directly support the defined business objective.
+
+# Reading and Preparing Datasets
+
+The cleaned data directory includes multiple CSV files representing different aspects of e-commerce operations, including product-level transactions, monthly profit and loss reports, and international sales data.  
+At this stage, each relevant file is imported into R using a custom function (`read_csv_if`) that checks for file existence before reading, ensuring a smooth and reproducible data loading process.
+
+After loading, all datasets are stored within a single list object to streamline subsequent cleaning steps.  
+To maintain consistency and avoid potential issues with column mismatches, variable naming, or capitalization differences, the **`janitor::clean_names()`** function is applied across all imported data frames.  
+This step converts column headers to a uniform lowercase, snake_case format (e.g., `Order ID` → `order_id`), improving readability and supporting tidyverse compatibility for downstream analysis.
+
+```{r reading csv files}
+amazon_sales      <- read_csv_if("Amazon Sale Report.csv")
+pnl_mar_2021      <- read_csv_if("P_L_March-2021.csv")
+pnl_may_2022      <- read_csv_if("May-2022.csv")
+intl_sales        <- read_csv_if("International sale Report.csv")
+
+# cleaning all datasets column names together
+datasets <- list(
+  amazon_sales=amazon_sales,
+  pnl_mar_2021=pnl_mar_2021,
+  pnl_may_2022=pnl_may_2022,
+  intl_sales=intl_sales
+  )
+datasets <- lapply(datasets, function(df) if(!is.null(df)) janitor::clean_names(df) else NULL)
+list2env(datasets, .GlobalEnv)
+```
+# Exploring Dataset Structure
+
+Before performing any cleaning or transformation, it is essential to understand the structure of each imported dataset.  
+The **`glimpse()`** function from the *dplyr* package provides a concise overview of variable names, data types, and sample values.  
+This helps verify that each CSV file was successfully imported, that column names were standardized correctly, and that no major structural inconsistencies (such as unexpected NA columns or misaligned headers) exist before proceeding to detailed inspection and preprocessing.
+```{r}
+glimpse(pnl_mar_2021)
+glimpse(pnl_may_2022)
+glimpse(amazon_sales)
+glimpse(intl_sales)
+```
+## Checking Null Values
+
+To assess data completeness, each dataset was scanned for missing values using a simple NA-counting function.  
+This step identifies columns with incomplete information, helping to determine whether imputation, removal, or business-driven exclusion is necessary in subsequent preprocessing.  
+A tabular summary of missing values across all datasets is provided below.
+```{r}
+# Function to count NA values in each column
+na_summary <- function(df) {
+  sapply(df, function(x) sum(is.na(x)))
+}
+
+# Apply to all datasets
+na_counts <- lapply(
+  list(
+    pnl_mar_2021 = pnl_mar_2021,
+    pnl_may_2022 = pnl_may_2022,
+    amazon_sales = amazon_sales,
+    intl_sales   = intl_sales
+  ),
+  na_summary
+)
+
+# Display summary of missing values
+na_counts
+```
+
+## Data Validation and Cleaning for 2021 and 2022 Datasets
+
+### Data Harmonization: Averaging TP₁ and TP₂
+
+In the 2021 dataset, two variables — `TP_1` and `TP_2` — represent the product prices on two distinct third-party platforms: the *primary* and *secondary* sellers.  
+Each captures the listed price on its respective marketplace, allowing platform-specific comparison.
+
+However, in the 2022 dataset, these two fields were replaced by a single variable, `TP`, which the documentation defines as *“TP 1 & TP 2 MRP Old — Original price of the product (Integer)”*.  
+Upon closer inspection, this description is **identical** to the one used for `MRP Old` in the same file, strongly suggesting a **copy-paste error** in the dataset documentation.  
+As a result, the `TP` column in 2022 is not clearly distinguished from the true third-party pricing fields (`TP_1` and `TP_2`) in the 2021 data, even though its naming convention implies that both have been merged.
+
+To correct for this inconsistency and preserve analytical compatibility between years, the 2021 dataset was standardized by averaging the values of `TP_1` and `TP_2` into a single column named `tp`.
+
+This adjustment was made for the following reasons:
+
+- **Documentation Misalignment:**  
+  The 2022 `TP` description appears to have been mistakenly copied from `MRP Old`, creating ambiguity about its meaning.  
+  Averaging `TP_1` and `TP_2` restores conceptual equivalence by treating 2021’s dual fields as a single combined third-party price, consistent with 2022’s schema.
+
+- **Cross-Year Consistency:**  
+  The transformation aligns both datasets under one standardized `tp` variable, facilitating longitudinal and merged (*MegaDataset*) analyses.
+
+- **Data Integrity:**  
+  Averaging prevents distortion or redundancy that might arise from duplicating columns, ensuring that pricing magnitude remains comparable across years.
+
+- **Analytical Simplicity:**  
+  The unified `tp` column simplifies downstream modeling, margin analysis, and platform comparison.
+
+> **Note:** This averaging step only affects `TP_1` and `TP_2`.  
+> All other variables remain unchanged. After this adjustment, both datasets share a consistent `tp` column representing the aggregated third-party price, while correcting for the likely copy-paste error in the 2022 documentation.
+
+
+```{r}
+#Averaging tp1 and tp2 in 2021
+pnl_mar_2021 <- pnl_mar_2021 %>%
+  mutate(
+    tp_1 = suppressWarnings(as.numeric(tp_1)),
+    tp_2 = suppressWarnings(as.numeric(tp_2)),
+    tp = rowMeans(pick(tp_1, tp_2), na.rm = TRUE) %>% ifelse(is.nan(.), NA_real_, .)
+  ) %>%
+  select(-tp_1, -tp_2)
+# This helps to make column names in two file the same order
+pnl_may_2022 <- pnl_may_2022 %>%
+  select(names(pnl_mar_2021))
+```
+### Adding Year Column for Temporal Comparison
+
+To facilitate future time-based analysis and cross-year comparison,  
+a new variable `year` was added to each dataset to indicate the reporting period.  
+
+Specifically:
+- `year = 2021` was assigned to the March 2021 dataset (`pnl_mar_2021`);
+- `year = 2022` was assigned to the May 2022 dataset (`pnl_may_2022`).
+
+This addition ensures that when the datasets are later joined into a unified *MegaDataset*,  
+observations from different reporting periods can be clearly distinguished and compared.
+```{r}
+# Add year column to each dataset
+pnl_mar_2021 <- pnl_mar_2021 %>%
+  mutate(year = 2021)
+
+pnl_may_2022 <- pnl_may_2022 %>%
+  mutate(year = 2022)
+```
+
+### Investigating Missing MRP Values in 2021 and 2022
+
+To further assess data completeness, the 2021 and 2022 profit-and-loss datasets (`pnl_mar_2021` and `pnl_may_2022`) were examined in detail, focusing on *MRP-related columns* such as `mrp_old`, `final_mrp_old`, and marketplace-specific MRP fields.  
+Initial inspection revealed that both datasets contained the **same number of missing MRP entries**, prompting a closer look to determine whether these missing values occur in the **same product rows** across years.
+
+From a business perspective, verifying whether the same SKUs are missing MRP values in both periods helps distinguish **systematic issues** (e.g., inactive or discontinued products) from **random data entry gaps**.  
+If identical SKUs consistently lack MRP information, these records likely represent items that are no longer active in sales channels and can therefore be **excluded from further pricing or profitability analysis** rather than being imputed.
+
+```{r}
+# Filter rows with missing old MRP in 2021
+pnl_mar_2021 %>%
+  filter(is.na(mrp_old))
+
+# Filter rows with missing old MRP in 2022
+pnl_may_2022 %>%
+  filter(is.na(mrp_old))
+```
+### Refining Data by Removing Abnormal MRP Patterns
+
+After the null-value inspection, it became evident that all *MRP-related columns* (`*_mrp`, `*_final_mrp`, `*_mrp_old`, etc.) shared missing values in the **same rows** across both 2021 and 2022 datasets.  
+This consistent absence suggests these SKUs likely represent **inactive or delisted products** rather than random entry errors. To ensure that subsequent analysis focuses on valid, active listings, these abnormal records were removed.
+
+The filtering process followed two primary business rules:
+1. **Complete MRP absence:** Rows where all MRP-related columns are missing and no transaction price (`tp`) is provided.  
+2. **Inconsistent pricing pattern:** Rows where `tp` is missing but only one isolated MRP field (e.g., `myntra_mrp`) remains non-null — indicating unreliable or partial marketplace data.
+
+The following code identifies MRP-related columns dynamically and removes these abnormal patterns for both 2021 and 2022 datasets.
+```{r}
+library(dplyr)
+#find all mrp related columns
+mrp_cols_2021 <- names(pnl_mar_2021)[grepl("mrp", names(pnl_mar_2021), ignore.case = TRUE)]
+
+pnl_mar_2021 <- pnl_mar_2021 %>%
+  mutate(
+    mrp_non_na_count = rowSums(!is.na(select(., all_of(mrp_cols_2021)))),
+    tp_missing = is.na(tp)
+  ) %>%
+  # delete two type of abnormals: no tp and no mrp related values or no tp but have myntra_mrp value
+  filter(!( (!tp_missing & mrp_non_na_count == 0) | (tp_missing & mrp_non_na_count == 1) ))
+# Do the same for 2022
+mrp_cols_2022 <- names(pnl_may_2022)[grepl("mrp", names(pnl_may_2022), ignore.case = TRUE)]
+
+pnl_may_2022 <- pnl_may_2022 %>%
+  mutate(
+    mrp_non_na_count = rowSums(!is.na(select(., all_of(mrp_cols_2022)))),
+    tp_missing = is.na(tp)
+  ) %>%
+  filter(!( (!tp_missing & mrp_non_na_count == 0) | (tp_missing & mrp_non_na_count == 1) ))
+```
+### Investigating Missing Weight Values in 2021 and 2022
+
+After removing abnormal MRP patterns, the remaining missing values across both datasets were isolated to the `weight` column.  
+This field is critical for downstream analyses such as **logistics cost allocation**, **shipping fee estimation**, and **profit margin normalization** by product size.  
+Therefore, identifying SKUs with missing `weight` entries helps determine whether the absence stems from data-entry gaps or represents items not subject to weight-based logistics (e.g., digital bundles or accessory kits).
+
+The following code filters rows with missing weights in both 2021 and 2022 datasets:
+```{r}
+# Filter rows with missing weights in 2021
+pnl_mar_2021 %>%
+  filter(is.na(weight))
+
+# Filter rows with missing weights in 2022
+pnl_may_2022 %>%
+  filter(is.na(weight))
+
+```
+### Removing the `weight` Column
+
+According to the project objective, the primary focus of this analysis is to **measure and predict e-commerce profitability**  
+based on pricing, cost, fulfillment, and platform factors.  
+Since `weight` does not directly contribute to the profit or margin calculations,  
+its absence does not hinder the core analytical or modeling objectives.
+
+
+In short:
+- `weight` is **not used in margin, pricing, or fulfillment comparison models**.  
+- It contributes **no predictive or explanatory value** to profitability analysis.  
+- Its missing values are therefore **non-critical** and can be safely dropped to simplify the dataset.
+```{r}
+# Remove the weight, and current irrelevant columns from both datasets
+pnl_may_2022 <- pnl_may_2022 %>% select(-weight, -tp_missing, -mrp_non_na_count)
+pnl_mar_2021 <- pnl_mar_2021 %>% select(-weight, -tp_missing, -mrp_non_na_count)
+```
+
+### Exploring SKU Tokens 
+
+Now a deeper inspection was conducted to understand whether the **SKU naming conventions** contains error entries with upper or lower case.
+
+Since SKUs often include brand, collection, or style prefixes (e.g., `GOLD-1352`, `PETALS-1232`, `IRIS_1413`),  
+we extracted the alphabetical prefix from each SKU to explore potential product family patterns.
+
+```{r}
+# Extract keyword prefix before dash or underscore
+pnl_may_2022 <- pnl_may_2022 %>%
+  mutate(sku_prefix = str_extract(sku, "^[A-Za-z]+"))  # captures 'GOLD', 'PETALS', 'IRIS', etc.
+
+# Check which prefixes correspond to missing metadata
+pnl_may_2022 %>%
+  
+  count(sku_prefix, sort = TRUE)
+
+# Same for 2021
+pnl_mar_2021 <- pnl_mar_2021 %>%
+  mutate(sku_prefix = str_extract(sku, "^[A-Za-z]+"))  # captures 'GOLD', 'PETALS', 'IRIS', etc.
+
+# Check which prefixes correspond to missing metadata
+pnl_mar_2021 %>%
+  
+  count(sku_prefix, sort = TRUE)
+```
+
+During the prefix extraction process, we identified **two missing (`NA`) values** in the `sku_prefix` column.  
+To ensure these were not systematic data issues, we performed a quick check across both datasets (`pnl_may_2022` and `pnl_mar_2021`) to locate and inspect the affected rows.
+
+This verification helps confirm whether the missing prefixes are due to **data entry errors**, **non-standard product codes**, or **incomplete records**.  
+Since our business objective focuses on price alignment and trend analysis across standardized apparel items, validating these prefix gaps ensures that all subsequent grouping and comparison steps remain reliable.
+
+```{r}
+pnl_may_2022 %>% filter(sku_prefix == ""| is.na(sku_prefix))
+pnl_mar_2021 %>% filter(sku_prefix == ""| is.na(sku_prefix))
+```
+Upon inspecting the missing `sku_prefix` entries, we found that the affected rows corresponded to **mask-related products**, whose `style_id` fields contained descriptions such as *“3pl reusable cotton mask”* and *“3pl Cottom Face Mask”*.  
+Since these products were misclassified during prefix extraction due to non-standard naming formats, we reassigned their `sku_prefix` values manually.
+
+Both the 2021 and 2022 datasets were updated by applying a conditional rule to label these entries as **“MASK”**, ensuring consistent product grouping across datasets.  
+This correction preserves the integrity of prefix-based analyses while maintaining alignment with our **business objective**—focusing on comparable product categories (e.g., apparel and related accessories) rather than leaving these entries unclassified.
+
+```{r}
+pnl_mar_2021 <- pnl_mar_2021 %>%
+  mutate(
+    sku_prefix = case_when(
+      str_detect(style_id, regex("3pl reusable cotton mask", ignore_case = TRUE)) ~ "MASK",
+      str_detect(style_id, regex("3pl cottom face mask", ignore_case = TRUE)) ~ "MASK",
+      TRUE ~ sku_prefix
+    )
+  )
+
+pnl_may_2022 <- pnl_may_2022 %>%
+  mutate(
+    sku_prefix = case_when(
+      str_detect(style_id, regex("3pl reusable cotton mask", ignore_case = TRUE)) ~ "MASK",
+      str_detect(style_id, regex("3pl cottom face mask", ignore_case = TRUE)) ~ "MASK",
+      TRUE ~ sku_prefix
+    )
+  )
+```
+
+All other prefixes (e.g., `GOLD`, `PETALS`, `IRIS`, `MASK`, `SILVER`) except (`OS`,`OsKR`,`Os`)appear in a consistent case format.
+To verify naming consistency, both uppercase (`OS`) and mixed-case (`Os`) SKU groups were compared.  
+
+There are possibility that exists discrepancy, which stems from **legacy naming conventions** in the `OS` product line:
+- Early entries may have been created manually, leading to inconsistent capitalization (`Os1010_XL`, `OS1010_XL`).
+- Later data imports or platform updates (e.g., from regional systems like `OsKR`) introduced case variations but preserved identical base SKUs.
+- Other product families (such as `GOLD` or `IRIS`) were likely generated under more standardized catalog pipelines, preventing case drift.
+```{r}
+# Extract SKU lists by prefix
+os_upper_2022 <- pnl_may_2022 %>%
+  filter(str_detect(sku, "^OS")) %>%
+  pull(sku)
+
+os_lower_2022 <- pnl_may_2022 %>%
+  filter(str_detect(sku, "^Os")) %>%
+  pull(sku)
+
+# Normalize both sets to uppercase for comparison
+os_overlap_2022 <- intersect(toupper(os_upper_2022), toupper(os_lower_2022))
+
+# Display results
+length(os_upper_2022)
+length(os_lower_2022)
+length(os_overlap_2022)
+
+# Optionally print overlapping SKUs
+os_overlap_2022
+
+# Same for 2021
+os_upper_2021 <- pnl_mar_2021 %>%
+  filter(str_detect(sku, "^OS")) %>%
+  pull(sku)
+
+os_lower_2021 <- pnl_mar_2021 %>%
+  filter(str_detect(sku, "^Os")) %>%
+  pull(sku)
+
+# Normalize both sets to uppercase for comparison
+os_overlap_2021 <- intersect(toupper(os_upper_2021), toupper(os_lower_2021))
+
+# Display results
+length(os_upper_2021)
+length(os_lower_2021)
+length(os_overlap_2021)
+
+# Optionally print overlapping SKUs
+os_overlap_2021
+```
+
+Following the case-sensitivity analysis, which seems that the `OS` and `Os` prefixes represent **distinct product families**,  
+we next examined the structural connection between `sku` and `style_id`.  
+Preliminary inspection suggested that each SKU might be generated by **concatenating a base `style_id` with a size suffix**  
+(e.g., `_S`, `_M`, `_L`, `_XL`, `_2XL`, etc.), indicating that the two fields are hierarchically related rather than independent.
+
+To verify this, we extracted all characters in `sku` **before the final underscore** and compared them with the corresponding `style_id`.  
+This test allows us to confirm whether each SKU can be expressed as:
+
+> **SKU = style_id + size_variant**
+
+If this pattern holds consistently across the dataset, it implies that `style_id` functions as the **base product identifier**,  
+while SKU-level records differentiate between size variants of the same product.  
+Understanding this structure is crucial for determining whether aggregation or variant-level analysis is appropriate  
+for subsequent profitability modeling.
+
+```{r}
+style_mismatch_2022 <- pnl_may_2022 %>%
+  mutate(sku_prefix = str_extract(sku, "^.*(?=_[A-Za-z0-9]+$)")) %>%  # everything before the last underscore
+  filter(style_id != sku_prefix) %>%
+  select(sku, style_id, sku_prefix, catalog, category) %>%
+  distinct()
+
+# Display sample of mismatched rows
+head(style_mismatch_2022, 20)
+
+# Optionally recompute match rate after correction
+pnl_may_2022 %>%
+  mutate(sku_prefix = str_extract(sku, "^.*(?=_[A-Za-z0-9]+$)")) %>%
+  summarise(match_rate = mean(style_id == sku_prefix, na.rm = TRUE))
+
+# Same for 2021
+style_mismatch_2021 <- pnl_mar_2021 %>%
+  mutate(sku_prefix = str_extract(sku, "^.*(?=_[A-Za-z0-9]+$)")) %>%  
+  filter(style_id != sku_prefix) %>%
+  select(sku, style_id, sku_prefix, catalog, category) %>%
+  distinct()
+
+# Display sample of mismatched rows
+head(style_mismatch_2021, 20)
+
+# Optionally recompute match rate after correction
+pnl_mar_2021 %>%
+  mutate(sku_prefix = str_extract(sku, "^.*(?=_[A-Za-z0-9]+$)")) %>%
+  summarise(match_rate = mean(style_id == sku_prefix, na.rm = TRUE))
+```
+
+Further inspection of the mismatched `sku` and `style_id` pairs revealed that the earlier assumption  
+— that `OS` and `Os` represent **distinct product families** — was incorrect.  
+Upon closer review, these differences stem solely from **inconsistent capitalization**,  
+where some product prefixes were mistakenly entered as `OS` instead of the standardized `Os`.  
+
+Since both prefixes refer to the same underlying product line, we corrected this inconsistency  
+by unifying capitalization across both `sku` and `style_id` fields.  
+This adjustment ensures that subsequent structural comparisons accurately reflect true product relationships  
+rather than typographical variation.
+
+```{r}
+pnl_may_2022 <- pnl_may_2022 %>%
+  mutate(
+    sku = str_replace(sku, "^OS", "Os"),          # unify prefix capitalization
+    style_id = str_replace(style_id, "^OS", "Os") # apply same normalization
+  )
+
+pnl_mar_2021 <- pnl_mar_2021 %>%
+  mutate(
+    sku = str_replace(sku, "^OS", "Os"),          
+    style_id = str_replace(style_id, "^OS", "Os") 
+  )
+```
+### Extracting and Reviewing Size Variants from SKU Codes
+
+In this step, we extracted the **size variant** from each product’s SKU by isolating the substring that appears **after the final underscore (`_`)**.  
+This allows us to identify standardized apparel sizes such as `S`, `M`, `L`, `XL`, `2XL`, and `3XL`.
+
+We applied the same extraction logic to both datasets (`pnl_may_2022` and `pnl_mar_2021`) to ensure structural consistency.  
+After extraction, a frequency count was performed to preview the distribution of size variants.
+
+```{r}
+pnl_may_2022 <- pnl_may_2022 %>%
+  mutate(size_variant = str_extract(sku, "(?<=_)[^_]+$"))
+
+# Preview the extracted variants
+pnl_may_2022 %>%
+  count(size_variant, sort = TRUE) %>%
+  head(20)
+
+pnl_mar_2021 <- pnl_mar_2021 %>%
+  mutate(size_variant = str_extract(sku, "(?<=_)[^_]+$"))
+
+# Preview the extracted variants
+pnl_mar_2021 %>%
+  count(size_variant, sort = TRUE) %>%
+  head(20)
+```
+
+The results show that while most SKUs follow consistent apparel sizing patterns, a few irregular entries such as `2XLL`, `MM`, and `NA` indicate **data entry errors** or **non-clothing products**.  
+Cleaning these inconsistencies is crucial because **our business objective focuses on analyzing apparel price alignment and trend patterns across marketplaces**.  
+Since non-clothing items and incorrect size codes do not contribute to apparel-level pricing insights, identifying and correcting them ensures that subsequent analyses remain accurate and business-relevant.
+
+```{r}
+pnl_mar_2021 <- pnl_mar_2021 %>%
+  mutate(
+    # Correct size_variant directly
+    size_variant = case_when(
+      size_variant == "2XLL" ~ "2XL",
+      size_variant == "MM" ~ "M",
+      TRUE ~ size_variant
+    ),
+    
+    # Apply same correction to SKU strings
+    sku = str_replace_all(sku, "_2XLL", "_2XL"),
+    sku = str_replace_all(sku, "_MM", "_M")
+  )
+
+pnl_may_2022 <- pnl_may_2022 %>%
+  mutate(
+    # Correct size_variant directly
+    size_variant = case_when(
+      size_variant == "2XLL" ~ "2XL",
+      size_variant == "MM" ~ "M",
+      TRUE ~ size_variant
+    ),
+    
+    sku = str_replace_all(sku, "_2XLL", "_2XL"),
+    sku = str_replace_all(sku, "_MM", "_M")
+  )
+
+# Standardize non-clothing items by labeling their size_variant as "Non_Clothing"
+pnl_mar_2021 <- pnl_mar_2021 %>%
+  mutate(
+    size_variant = case_when(
+      is.na(size_variant) ~ "Non_Clothing",
+      size_variant == "" ~ "Non_Clothing",
+      sku_prefix %in% c("MASK", "SILVER", "PLATINUM", "COPPER", "FOUR", "PETALS") ~ "Non_Clothing",
+      TRUE ~ size_variant
+    )
+  )
+
+pnl_may_2022 <- pnl_may_2022 %>%
+  mutate(
+    size_variant = case_when(
+      is.na(size_variant) ~ "Non_Clothing",
+      size_variant == "" ~ "Non_Clothing",
+      sku_prefix %in% c("MASK", "SILVER", "PLATINUM", "COPPER", "FOUR", "PETALS") ~ "Non_Clothing",
+      TRUE ~ size_variant
+    )
+  )
+
+```
+###Combining Cleaned 2021 and 2022 Datasets
+
+After completing all cleaning and normalization steps, both the 2021 (`pnl_mar_2021`) and 2022 (`pnl_may_2022`) datasets were combined into a single dataframe, `pnl_combined`.  
+This consolidated dataset provides a unified structure for cross-year comparison and downstream analysis, including price drift, cost alignment, and trend evaluation across different product families.
+
+The column `sku` was retained at this stage to preserve the most granular product identifiers.  
+Since each SKU encodes both a `style_id` and `size_variant`, keeping it allows direct one-to-one matching between 2021 and 2022 entries.  
+In later modeling or visualization stages, aggregation can be performed by `style_id` or `category` as needed, but for now, maintaining SKU granularity ensures full traceability of individual product variants.
+
+The combined dataset is now ready for feature alignment, ratio computation (e.g., `tp/mrp`), and further analytical steps toward our business objective of assessing pricing consistency across platforms and time.
+```{r}
+pnl_combined <- bind_rows(pnl_mar_2021, pnl_may_2022)
+
+# Verify the combined structure
+glimpse(pnl_combined)
+```
+
+## Data Validation and Cleaning for Amazon Sales Dataset
+
+### Removing Irrelevant Columns
+
+During the initial inspection, three categories of redundant or non-contributory fields were identified within the `amazon_sales` dataset:
+
+1. An **unnamed column**, containing only `NULL` or Boolean-like placeholder values with no analytical or business significance.  
+2. Several **shipping-related attributes** (`ship_city`, `ship_state`, `ship_postal_code`, `ship_country`) and the **Amazon Standard Identification Number (`asin`)**, which are operationally useful but analytically irrelevant to the project’s objective of evaluating profitability across platforms, fulfillment methods, and product categories.  
+3. The **`promotion_ids`** field, which records promotional identifiers without corresponding financial or categorical information necessary for profitability modeling.  
+
+To preserve analytical clarity and minimize data dimensionality, these columns were excluded using the `select()` function from the **dplyr** package.  
+This refinement ensures that only business-relevant transactional, pricing, and fulfillment information is retained for further analysis and modeling.
+```{r}
+amazon_sales <- amazon_sales %>%
+  select(-index, -starts_with("unnamed"))
+amazon_sales <- amazon_sales %>%
+  select(-asin, -ship_city, -ship_state, -ship_postal_code, -ship_country, -promotion_ids)
+```
+
+### Identifying Column Relationships via Missing-Value Patterns
+
+Upon examining the null-value distribution, several columns exhibited identical counts of missing entries, suggesting potential **relational dependencies** between them.  
+
+Specifically:
+
+- `currency` and `amount` share the same number of nulls, indicating that **monetary data is recorded only when a valid transaction exists**.  
+- Similarly, `ship_city`, `ship_state`, `ship_postal_code`, and `ship_country` have matching null counts, implying that these **shipping fields operate as a single composite block** — either all filled when a shipment occurs or all missing when the order lacks fulfillment details.  
+
+This pattern suggests structured data entry rules within Amazon’s system, where certain fields are **conditionally populated** based on transaction status.  
+Recognizing these relationships is useful for designing cleaning logic that treats related fields as **co-dependent variables** — for instance, jointly removing rows missing both `currency` and `amount`, or imputing address data as a group rather than individually.
+
+```{r}
+amazon_sales %>%
+  filter(
+    is.na(currency) & is.na(amount) 
+  ) 
+
+```
+
+Upon filtering records in which both `currency` and `amount` were missing or empty, a consistent pattern began to emerge:  
+the majority of these transactions exhibited a `status` of **“Cancelled”**, with their corresponding `courier_status` recorded as either **“Cancelled”**, **“Unshipped”**, or occasionally `NULL`.
+
+This preliminary finding suggests that monetary attributes (`currency` and `amount`) are **not populated for transactions voided prior to payment or fulfillment**, reflecting expected system behavior within Amazon’s order management workflow.
+
+To verify whether this relationship holds across all transaction types—and to identify any exceptions where monetary data might be missing under non-cancelled conditions—a **two-step frequency analysis** was performed:  
+
+1. **Independent Frequency Counts:**  
+   The total occurrences of each `status` and `courier_status` were computed to assess the diversity of operational states and their relative volume.  
+
+2. **Joint Null Distribution Summary:**  
+   A grouped aggregation across both `status` and `courier_status` quantified the number of missing (`NULL` or empty) versus non-missing values for `currency` and `amount`.  
+   This step allows identification of systematic versus irregular null behaviors and provides a foundation for targeted data-cleaning logic.
+
+```{r}
+amazon_sales %>%
+  count(status, sort = TRUE)
+
+amazon_sales %>%
+  count(courier_status, sort = TRUE)
+
+# Summarize null and non-null counts by status/courier_status combinations
+amazon_sales %>%
+  group_by(status, courier_status) %>%
+  summarise(
+    n_total = n(),
+    currency_null = sum(is.na(currency) | currency == ""),
+    currency_non_null = sum(!is.na(currency) & currency != ""),
+    amount_null = sum(is.na(amount)),
+    amount_non_null = sum(!is.na(amount))
+  ) %>%
+  arrange(desc(amount_null))
+```
+Upon reviewing the distribution of both `status` and `courier_status`, it became evident that the dataset contains a greater diversity of transaction states than initially assumed.  
+While preliminary assumptions focused on the categories “Cancelled” and “Shipped,” the `status` field in fact includes over **a dozen distinct labels**, reflecting various stages of the order life cycle (e.g., *Shipped – Picked Up*, *Returned to Seller*, *Pending – Waiting for Pick Up*, etc.).  
+Similarly, the `courier_status` field comprises **four possible states** — *Shipped*, *Unshipped*, *Cancelled*, and `NULL`.
+
+To better understand how these transactional states correlate with missing financial data, the dataset was iteratively filtered across different combinations of `status` and `courier_status`.  
+Through this diagnostic process, **nine recurring combinations** were identified in which both `currency` and `amount` values consistently appeared as `NULL`.
+
+These combinations represent logical or systemic cases where Amazon’s internal Order Management System (OMS) and Fulfillment Management System (FMS) likely suppress financial field population — for instance, when an order is cancelled prior to payment processing or returned before revenue recognition.  
+Recognizing these structured relationships is critical for distinguishing between **expected** and **anomalous null values**, thereby ensuring the integrity of profitability metrics derived in later analyses.
+
+### Rationale for Null Classification Mapping
+
+Following the identification of nine recurrent `status` and `courier_status` combinations associated with missing financial fields, a structured classification variable—`null_reason`—was introduced to explicitly label the **underlying operational cause** behind each null pattern.
+
+This step serves multiple analytical purposes:
+
+1. **Enhance Interpretability:**  
+   By assigning descriptive categories (e.g., *Order_Cancelled_PrePayment*, *Shipping_Incomplete_NoBilling*), the dataset captures *why* specific records lack financial data, rather than treating all nulls as equivalent missing values.
+
+2. **Distinguish System-Expected vs. Data-Quality Nulls:**  
+   Many nulls arise from legitimate operational logic—such as cancelled or pre-payment orders where revenue is never recorded.  
+   Explicitly tagging these cases prevents them from being misclassified as data errors in subsequent profitability analyses.
+
+3. **Enable Controlled Filtering and Aggregation:**  
+   With the new `null_reason` field, downstream analysis can selectively exclude only *anomalous* or *unexpected* nulls, while retaining legitimate “non-billing” cases for volume-based metrics (e.g., order counts, cancellation rates).
+
+4. **Facilitate Transparent Data Auditing:**  
+   The mapping ensures that each null pattern can be traced back to a verifiable business process in Amazon’s Order Management System (OMS) or Fulfillment Management System (FMS), supporting data lineage and compliance documentation.
+
+In essence, the creation of the `null_reason` field transforms what was previously an *ambiguous missing-data problem* into a **diagnostically rich categorical variable**—one that strengthens analytical rigor and maintains full transparency in profitability modeling.
+
+```{r}
+amazon_sales <- amazon_sales %>%
+  mutate(
+    null_reason = case_when(
+      status == "Pending" & courier_status == "Cancelled" ~ "Order_Cancelled_PrePayment",
+      status == "Shipped" & courier_status %in% c("Cancelled", "Unshipped") ~ "Logistics_Broken_NoBilling",
+      status == "Shipping" & courier_status == "Unshipped" ~ "Shipping_Incomplete_NoBilling",
+      status == "Shipped - Delivered to Buyer" & is.na(courier_status) ~ "Legacy_Export_NoCourier",
+      status == "Shipped - Returned to Seller" & is.na(courier_status) ~ "Return_Handled_Externally",
+      status == "Cancelled" & courier_status == "Cancelled" ~ "Dual_System_Cancelled",
+      status == "Cancelled" & is.na(courier_status) ~ "Prepaid_Cancelled_PartialNull",
+      status == "Cancelled" & courier_status == "Unshipped" ~ "Prepaid_Cancelled_MajorityHasValue",
+      TRUE ~ "Normal_or_Unclassified"
+    )
+  )
+
+```
+
+### Standardizing Monetary Fields and Defining Auditing Flags
+
+Following the classification of null causes, additional data transformation steps were implemented to ensure that the financial fields (`amount` and `currency`) are both **standardized and analytically interpretable**.  
+This transformation integrates business logic derived from Amazon’s transaction workflows to produce a consistent, auditable dataset for profitability analysis.
+
+1. **Filling Logical Nulls in Amount Values**  
+   Among the nine observed combinations of `status` and `courier_status`, only **two** exhibited nulls that were deemed *semi-logical but correctable*.  
+   These correspond to cases where:
+   - `status == "Cancelled"` and `courier_status == NA`  
+   - `status == "Cancelled"` and `courier_status == "Unshipped"`  
+
+   In both scenarios, the majority of transactions already contained valid monetary data (non-null `amount` and `currency`), with only a few residual nulls likely caused by **incomplete synchronization or data export leakage** rather than genuine unpaid orders.  
+   Therefore, the missing `amount` values were filled with **0**, and missing `currency` values standardized to **"INR"**, reflecting *no payment processed* rather than *data absence*.
+
+2. **Why Other Nulls Were Not Filled**  
+   Other combinations—such as `Pending + Cancelled`, `Shipping + Unshipped`, or `Shipped + Returned`—represent **systemic process nulls** governed by Amazon’s Order and Fulfillment Management Systems (OMS/FMS).  
+   These nulls are *intentional placeholders* that occur when transactions are cancelled, returned, or halted before billing or courier confirmation.  
+   Filling them would incorrectly imply a monetary event where none occurred, introducing **false financial signals**.  
+   As such, these records were retained with `NA` values to preserve the authenticity of transaction life-cycle tracking and to support future operational diagnostics.
+
+3. **Currency Standardization**  
+   Since all transactions occurred within the same domestic market (India), all monetary records were standardized to **INR**, replacing any missing or empty values with the same currency code for consistency in later analysis.
+
+4. **Creating the `amount_flag` for Data Auditing**  
+   To ensure transparency and traceability, an `amount_flag` variable was introduced, categorizing each record as:
+   - **EXPECTED_NULL:** Missing due to legitimate system cancellation.  
+   - **FILLED_ZERO:** Nulls filled with zero and “INR” where logically justified.  
+   - **UNEXPECTED_NULL:** Missing values outside system logic, to be flagged for investigation.  
+   - **OK:** Financially valid and complete transactions.
+
+This logic-driven transformation ensures that null handling aligns with **actual business process semantics**, preventing data distortion while maintaining analytical precision.  
+By distinguishing between *systemic nulls* and *correctable export errors*, the dataset achieves both **financial fidelity** and **operational transparency**, establishing a reliable foundation for subsequent profitability modeling.
+
+```{r}
+amazon_sales <- amazon_sales %>%
+  mutate(
+    # --- 1. Fill 0 for specific cancellation cases ---
+    amount = case_when(
+      # Only fill 0 when Cancelled & (courier_status is NA or Unshipped) and amount is NA
+      (status == "Cancelled" & is.na(courier_status) & is.na(amount)) ~ 0,
+      (status == "Cancelled" & courier_status == "Unshipped" & is.na(amount)) ~ 0,
+      TRUE ~ amount
+    ),
+
+    # --- 2. Standardize all currencies ---
+    # Since no other currency exists in the dataset, replace NA or empty values with INR
+    currency = if_else(is.na(currency) | currency == "", "INR", currency),
+
+    # --- 3. Tagging amount_flag for data auditing ---
+    amount_flag = case_when(
+      # Logical nulls due to system cancellation:
+      status %in% c("Pending", "Shipping", "Shipped") &
+        courier_status %in% c("Cancelled", "Unshipped") & is.na(amount) ~ "EXPECTED_NULL",
+
+      status %in% c("Cancelled") & courier_status %in% c("Cancelled") & is.na(amount) ~ "EXPECTED_NULL",
+
+      # Pre-authorized cancellations with missing values -> filled as 0 (completed):
+      (status == "Cancelled" & is.na(courier_status) & amount == 0) ~ "FILLED_ZERO",
+      (status == "Cancelled" & courier_status == "Unshipped" & amount == 0) ~ "FILLED_ZERO",
+
+      # Remaining unexpected nulls:
+      is.na(amount) ~ "UNEXPECTED_NULL",
+
+      # Normal valid records:
+      TRUE ~ "OK"
+    )
+  )
+
+```
+### Final Adjustment Across `currency`, `amount`, `status`, and `courier_status`
+
+To ensure complete transactional consistency, a final validation was performed across the four interdependent variables — `currency`, `amount`, `status`, and `courier_status`.  
+During a quick manual filter check in Excel, it was observed that **null values in `courier_status` only appeared under three order states**:  
+- `Cancelled`  
+- `Shipped – Delivered to Buyer`  
+- `Shipped – Returned to Seller`
+
+This pattern indicated that the missing courier data was **structurally linked to operational stages**, not random omission.  
+Accordingly, blanks were resolved as follows:
+- `Cancelled + NA` → **“Unshipped”** (orders cancelled before courier assignment)  
+- `Shipped + NA` → **“Shipped (unsynced)”** (fulfilled orders missing tracking synchronization)
+
+With these corrections, all remaining nulls in the dataset now represent **intentionally preserved system nulls** that reflect true process states rather than data loss.  
+This marks the completion of the data standardization for financial (`amount`, `currency`) and logistical (`status`, `courier_status`) attributes, producing a **semantically consistent and audit-ready transaction record**.
+```{r}
+amazon_sales <- amazon_sales %>%
+  mutate(
+    courier_status = case_when(
+      status == "Cancelled" & is.na(courier_status) ~ "Unshipped",
+      status %in% c("Shipped - Delivered to Buyer", "Shipped - Returned to Seller") & is.na(courier_status) ~ "Shipped (unsynced)",
+      TRUE ~ courier_status
+    )
+  )
+```
+
+### Transition to Fulfillment Analysis
+
+With financial and status fields (`amount`, `currency`, `status`, `courier_status`) now standardized and verified, the next analytical focus shifts toward **operational fulfillment logic**, particularly the `fulfilled_by` field — which currently contains the **largest share of missing values** in the dataset.
+
+Because fulfillment responsibility (Amazon vs. Merchant) directly influences **logistics cost**, **delivery efficiency**, and **profitability structure**, it is essential to clarify the relationship between `fulfilled_by` and `fulfilment` before any segmentation or modeling.
+
+The next step will therefore:
+1. Quantify the distribution of missing values in `fulfilled_by` and `fulfilment`.
+2. Examine whether missing `fulfilled_by` cases systematically align with specific `fulfilment` values (e.g., Amazon vs. Merchant).
+3. Decide whether to impute or standardize blanks in `fulfilled_by` based on verified operational patterns.
+
+This transition ensures that any correction or classification of missing fulfillment data is grounded in **validated business logic**, preserving both **data lineage integrity** and **operational relevance** for downstream profitability and performance analysis.
+
+
+```{r}
+amazon_sales %>%
+  count(fulfilled_by, sort = TRUE)
+
+# --- 2. Count distinct values in 'fulfilment' ---
+amazon_sales %>%
+  count(fulfilment, sort = TRUE)
+
+# --- 3. Count of NULLs (NAs) in each column ---
+amazon_sales %>%
+  summarise(
+    fulfilled_by_NA = sum(is.na(fulfilled_by) | fulfilled_by == ""),
+    fulfilment_NA = sum(is.na(fulfilment) | fulfilment == "")
+  )
+
+# --- 4. Cross-tab: How NA fulfilled_by corresponds to fulfilment values ---
+amazon_sales %>%
+  filter(is.na(fulfilled_by) | fulfilled_by == "") %>%
+  count(fulfilment, sort = TRUE)
+```
+A detailed audit of the fulfillment-related columns revealed a clear structural dependency between `fulfilled_by` and `fulfilment`:
+
+- The `fulfilled_by` column contained **89,698 missing or blank entries**.  
+- The `fulfilment` column contained **two distinct values — “Amazon” and “Merchant”**, with **no missing records**.  
+- Cross-tab analysis showed that **every null `fulfilled_by` record aligns exclusively with `fulfilment = "Amazon"`**, while entries with `fulfilment = "Merchant"` already possess valid `fulfilled_by` identifiers.
+
+This consistent one-to-one mapping confirms that the missing `fulfilled_by` values are **not true unknowns** but instead **system omissions** that implicitly represent Amazon-managed fulfillment operations (FBA).  
+In other words, these orders are handled directly by Amazon’s internal logistics and warehouse systems rather than external merchants — hence, the blanks denote **“FBA Amazon-fulfilled Orders.”**
+
+To maintain interpretive transparency and analytical completeness, all null or blank values in `fulfilled_by` were standardized to:
+
+> `fulfilled_by = "FBA Amazon-fulfilled Order"`
+
+This correction aligns fulfillment semantics across both columns, ensuring that:
+- `fulfilment` continues to denote **who initiated the fulfillment** (Amazon vs. Merchant).  
+- `fulfilled_by` explicitly captures **the operational handler** responsible for delivery execution.  
+
+Through this refinement, the dataset now provides a **coherent, fully specified fulfillment structure**, enabling more accurate downstream profitability and performance analysis.
+
+```{r}
+amazon_sales <- amazon_sales %>%
+  mutate(
+    # Fill missing 'fulfilled_by' with standardized label
+    fulfilled_by = if_else(
+      is.na(fulfilled_by) | fulfilled_by == "",
+      "FBA Amazon-fulfilled Order",
+      fulfilled_by
+    )
+  )
+```
+### Post-Imputation Validation: Remaining Null Overview
+
+With the completion of the `fulfilled_by` imputation, all fulfillment-related fields have now been standardized and logically aligned with Amazon’s operational structure.  
+At this stage, the dataset contains **no missing fulfillment attributes**, and all records are now explicitly labeled as either *“FBA Amazon-fulfilled Order”* or *Easy Ship*.
+The only remaining null values in the dataset should be **amount** column.
+To confirm this, a final null audit is conducted below to verify that all other columns have been successfully cleaned, ensuring the dataset is ready for subsequent profitability modeling and system-level diagnostics.
+```{r}
+amazon_sales %>%
+  count(status, courier_status, null_reason, amount_flag)
+amazon_sales %>%
+  summarise(across(everything(), ~ sum(is.na(.)))) %>%
+  pivot_longer(cols = everything(),
+               names_to = "column_name",
+               values_to = "na_count") %>%
+  arrange(desc(na_count))
+```
+### Divide Success and Fail Datasets
+
+At this stage, all non-financial nulls have been systematically resolved, and the only remaining missing values appear in the `amount` column.  
+These nulls were **intentionally preserved** to reflect genuine **non-realized transactions** — cases where an order was cancelled, returned, or otherwise halted before payment completion.
+
+To ensure analytical integrity, the dataset is now divided into two outcome-based subsets:
+
+- **“Success” dataset:**  
+  Contains transactions with a valid `amount` value, representing **completed and financially realized orders** suitable for profitability modeling.
+
+- **“Fail” dataset:**  
+  Contains transactions where `amount` remains `NA`, representing **unrealized or cancelled transactions**. These records are retained for **diagnostic and operational analysis** but excluded from financial aggregation.
+
+This segmentation enables clearer financial analysis and ensures that subsequent profitability or trend modeling is based only on **verifiable revenue events**, while the failure subset provides a reliable foundation for **cancellation and logistics risk analysis**.
+
+
+```{r}
+amazon_success <- amazon_sales %>%
+  filter(!is.na(amount))
+
+amazon_fail <- amazon_sales %>%
+  filter(is.na(amount))
+
+# Verify counts
+nrow(amazon_success)
+nrow(amazon_fail)
+```
+
+## Data Validation and Cleaning for International Sales Dataset
+
+### Investigation of Missing Values and Data Irregularities in `intl_sales`
+
+Preliminary null-value analysis indicated that several key columns — including `customer`, `style`, `sku`, `size`, `pcs`, `rate`, and `gross_amt` — each contained the same number of missing observations (1,041).  
+This uniformity suggested that these columns share a common source of missingness rather than independent data-entry gaps.
+
+To further examine this pattern, the dataset was filtered using the `customer` column as a representative field to isolate records with missing values:
+
+```{r}
+intl_sales %>% 
+  filter(is.na(customer))
+```
+
+Upon reviewing the filtered results, it was observed that the rows containing missing values across key fields (`customer`, `style`, `sku`, `size`, `pcs`, `rate`, and `gross_amt`) also displayed irregular entries within the `date` column.  
+Specifically, several `date` values contained non-date strings such as `"SKU"` and `"JNE3826"`, which are inconsistent with the expected date format.  
+This pattern indicates that the null values were not randomly distributed but were instead a consequence of a **data structure issue**.
+
+These abnormalities suggest that the underlying CSV file may have been **corrupted or improperly exported**, causing column headers or field values to misalign and spill into unintended columns.  
+To verify this assumption and gain a clearer understanding of the file’s structure, the dataset was subsequently opened in **Microsoft Excel** for manual inspection.  
+This additional step allowed for a detailed review of the data layout and helped confirm that the observed null patterns were the result of a structural export error rather than genuine missing entries.
+
+
+### Data Cleaning and Validation of `intl.csv` in Excel
+
+After importing the `intl.csv` dataset, a structural review revealed multiple abnormalities and duplicated segments when the file was opened in Excel. The dataset appeared partially corrupted and internally inconsistent:
+
+- The columns `customer`, `date`, `months`, `style`, `sku`, `pcs`, `rate`, `gross_amt`, and `size` were stacked on top of another group of columns beginning with `sku` and followed by a new column called `stocks`.
+- Following the `stocks` column, a second full set of columns (`customer`, `date`, `months`, `style`, `sku`, `pcs`, `rate`, `gross_amt`, `stock`) reappeared at the bottom of the sheet.
+- The lower section largely duplicated the upper portion, with only minor variations:
+  - The upper portion contained `size` but not `stock`.
+  - The lower portion contained `stock` but not `size`.
+- Both segments contained nearly identical data values, suggesting that an exporting or concatenation error occurred during the data extraction or reporting process.
+
+To ensure the integrity of the original data, the Excel file was **duplicated** prior to any modifications, and all cleaning operations were performed on the **copied version** of the dataset.
+
+**Cleaning Steps:**
+
+1. Removed the duplicated top rows that repeated observations already included in the lower section of the file.
+2. Dropped the `stock` column, as it did not provide meaningful information for the current analysis.
+3. Extracted and standardized the `size` information from the `sku` field to create a dedicated `size` column.  
+   - Recognized and harmonized size categories: `XS`, `SC`, `S`, `M`, `L`, `XL`, `XXL`, `XXXL`, `4XL`, `5XL`, `6XL`, `FREE`, and `NON-CLOTHING`.
+4. Filtered out rows unrelated to product transactions, including entries labeled `TAGS`, `TAGS LABOUR`, `LABOUR`, and `SHIPPING`.
+5. Conducted a completeness check to ensure that no missing (`NA`) values remained and verified that all retained records represented valid, consistent sales transactions.
+
+Upon completion of these procedures, the cleaned dataset was **saved as**  
+`International Sales Report Cleaned.csv` and **exported to** the `Processed` Folder in `E-Commerce` Folder,  
+which now contains a well-structured, consistent, and analysis-ready version of the international sales data.
+
+# Final Export: Saving Cleaned Datasets to Processed Directory
+
+After completing all validation and segmentation steps, each dataset is now **cleaned, standardized, and verified** for downstream modeling.  
+To maintain version control and ensure transparent data lineage, all outputs are saved to the `/processed` directory with the suffix **_Cleaned**.
+
+These exports include:
+- **amazon_sales_Cleaned.csv** – complete unified dataset post-cleaning  
+- **amazon_success_Cleaned.csv** – finalized dataset of valid financial transactions  
+- **amazon_fail_Cleaned.csv** – cancelled or non-realized transactions for diagnostics  
+- **pnl_mar_2021_Cleaned.csv**, **pnl_may_2022_Cleaned.csv**, and **pnl_combined_Cleaned.csv** – monthly and merged profitability datasets  
+
+Additionally, the **intl_sales.csv** file, which contains international transaction data, was **manually reviewed and exported to the `/processed` folder earlier** to ensure inclusion in the consolidated analysis pipeline.
+
+```{r}
+# --- Export all cleaned datasets to 'processed' directory ---
+write_csv(amazon_sales,  file.path(out_dir, "amazon_sales_Cleaned.csv"))
+write_csv(amazon_success, file.path(out_dir, "amazon_success_Cleaned.csv"))
+write_csv(amazon_fail,    file.path(out_dir, "amazon_fail_Cleaned.csv"))
+
+write_csv(pnl_mar_2021,   file.path(out_dir, "pnl_mar_2021_Cleaned.csv"))
+write_csv(pnl_may_2022,   file.path(out_dir, "pnl_may_2022_Cleaned.csv"))
+write_csv(pnl_combined,   file.path(out_dir, "pnl_combined_Cleaned.csv"))
+
+cat("All cleaned datasets successfully exported to the 'Processed' folder.")
+
+```
+# Conclusion and Transition to Analysis
+
+This data preparation phase has successfully transformed the raw e-commerce datasets into a **fully standardized, auditable, and analysis-ready data environment**.  
+Through systematic data validation, logical imputation, and field-level reconciliation, every dataset now conforms to **consistent business semantics** and **operational traceability**.  
+
+Key accomplishments include:
+- Consolidation and cleaning of multi-period profitability data (March 2021 and May 2022).  
+- Logical null handling across `amount`, `status`, `courier_status`, and fulfillment-related fields.  
+- Standardization of currencies, shipment indicators, and Amazon-specific process labels.  
+- Segmentation of datasets into **success** and **failure** transaction groups for targeted profitability modeling.  
+- Export of all verified outputs to the `/processed` directory with unified naming conventions for seamless downstream integration.
+
+With these foundational steps complete, the data ecosystem now provides a **stable analytical substrate** for deeper insights into sales performance, pricing consistency, and fulfillment efficiency.
+
+
+
+# Next Step: Analytical Insights and Visualization
+
+The upcoming **Analysis & Visualization** notebook will build upon these cleaned datasets to:
+- Perform **exploratory data analysis (EDA)** on sales, fulfillment, and profitability trends.  
+- Generate **visual insights** on pricing patterns, delivery outcomes, and margin variability.  
+- Integrate **business intelligence metrics** to identify key profit drivers across time and platforms.  
+
+Together, these analyses will connect the cleaned transactional data to **strategic business outcomes**, completing the transformation from raw data to actionable intelligence.
+

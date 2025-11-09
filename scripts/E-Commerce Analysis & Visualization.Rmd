@@ -1,0 +1,1423 @@
+---
+title: "E-Commerce Analysis & Visualization"
+author: "Peter Cheng"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    css: style.css
+  pdf_document: default
+output_dir: "/Users/yufeicheng/Desktop/E-Commerce"
+geometry: margin=1in
+---
+
+> **Dataset credit:** *E-Commerce Sales Dataset — “Unlock Profits with E-Commerce Sales Data”* on Kaggle, authored by [**ANil**](https://www.kaggle.com/datasets/thedevastator/unlock-profits-with-e-commerce-sales-data).
+
+# Introduction
+
+This R Markdown file performs the **analysis and visualization phase** of the E-Commerce Profitability project.  
+After the data preparation and cleaning in the previous R Markdown file, this document focuses on uncovering **key profitability drivers**, **cross-platform performance**, and **actionable insights** for pricing, inventory, and fulfillment optimization.
+
+The analysis supports the following project objectives:
+
+* **Identify the most profitable product categories** and fulfillment methods (e.g., Shiprocket vs. INCREFF).  
+* **Compare platform performance** in terms of margins, sales volume, and fulfillment costs.  
+* **Quantify key drivers** of profitability (price, cost, attributes, platform, fulfillment).  
+* **Provide data-driven recommendations** for pricing, inventory allocation, and fulfillment strategy.
+
+The cleaned datasets from the preparation stage will be imported, analyzed, and visualized using descriptive statistics, regression modeling, clustering, and exploratory graphics.
+
+---
+
+## Environment Setup
+
+Before beginning the analysis, it is essential to establish a **controlled and reproducible computing environment**.  
+All computations are performed in **RStudio** using the **R programming language**, with libraries focused on data manipulation, modeling, and visualization.
+
+This environment setup differs from the *Data Preparation* phase in the following ways:
+* It **removes cleaning-only packages** (such as `janitor`, `stringr`, `skimr`) since preprocessing has already been completed.
+* It **adds analytical and visualization packages** (e.g., `broom`, `caret`, `randomForest`, `cluster`, `ggcorrplot`, `factoextra`, and `gt`) to enable regression modeling, classification, clustering, and graphical reporting.
+* It defines a **directory structure** for organized input and output handling — ensuring reproducibility, transparency, and ease of presentation.
+
+The chunk below initializes the working environment, loads necessary libraries, and defines helper functions to streamline reading processed datasets and exporting analytical results.
+
+```{r environment setup}
+# ---- setup (analysis & visualization), include=FALSE ------------------------------------------------
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+options(scipen = 999)     # friendlier numbers
+set.seed(42)
+
+suppressWarnings(suppressMessages({
+  # Core wrangling & plotting
+  library(tidyverse)    # dplyr, tidyr, ggplot2, readr, forcats
+  library(lubridate)
+
+  # Modeling & evaluation
+  library(broom)        # tidy model outputs
+  library(caret)        # modeling workflows (regression/classification)
+  library(randomForest) # tree-based baselines
+  library(glmnet)       # regularized GLM (lasso/ridge)
+  library(rpart)        # recursive partitioning (decision trees)
+  library(rpart.plot)   # decision tree visualization
+
+  # Diagnostic isualization
+  library(ggcorrplot)   # correlation heatmaps
+
+  # Reporting
+  library(gt)           # pretty tables
+}))
+
+# ---- directories ------------------------------------------------------------------------------------
+# Use processed data as input; write figures/tables to 'outputs'
+data_dir <- "/Users/yufeicheng/Desktop/E-Commerce/E-Commerce Data/processed"
+out_dir  <- "/Users/yufeicheng/Desktop/E-Commerce/E-Commerce Data/outputs"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+# ---- helpers ----------------------------------------------------------------------------------------
+read_csv_if <- function(fname, ...) {
+  path <- file.path(data_dir, fname)
+  if (file.exists(path)) readr::read_csv(path, show_col_types = FALSE, ...) else NULL
+}
+
+# Global ggplot look
+theme_set(theme_minimal(base_size = 12))
+```
+# Data Import & Initial Exploration
+
+After establishing the analysis environment, the next step is to **load the processed datasets** generated during the Data Preparation phase.  
+These datasets have already been cleaned, standardized, and harmonized across multiple platforms (Amazon, Flipkart, Ajio, etc.).  
+In this phase, we will:
+
+1. **Import all relevant processed CSV files** from the `/processed` directory.  
+2. **Confirm schema consistency** (column names, data types, dimensions).  
+3. **Conduct an initial overview** of numerical and categorical variables to validate readiness for analysis.  
+
+Each dataset will be loaded using the `read_csv_if()` helper function defined earlier to ensure that the file exists before import.  
+
+```{r}
+ama_sale <- read_csv_if("amazon_sales_Cleaned.csv")
+ama_fail <- read_csv_if("amazon_fail_Cleaned.csv")
+ama_success <- read_csv_if("amazon_success_Cleaned.csv")
+intl_sale <- read_csv_if("International_sale_Cleaned.csv")
+pnl_03_2021 <- read_csv_if("pnl_mar_2021_Cleaned.csv")
+pnl_05_2022 <- read_csv_if("pnl_may_2022_Cleaned.csv")
+pnl_cb <- read_csv_if("pnl_combined_Cleaned.csv")
+
+glimpse(pnl_cb)
+glimpse(ama_success)
+glimpse(intl_sale)
+```
+# Column Overview and Missing Value Inspection
+
+Before conducting statistical analysis or modeling, it is essential to confirm that all key datasets share a consistent schema and have no major gaps in critical attributes.  
+This section performs two diagnostic checks:
+
+1. **Column Overview:**  
+   Extract and display column names from each dataset (`pnl_cb`, `ama_success`, and `intl_sale`) to verify schema alignment.  
+   This ensures that each dataset uses compatible variable names and structures—especially important when merging or comparing performance across platforms.
+
+2. **Missing Value Summary:**  
+   A custom function `check_missing()` is defined to calculate the count of missing (NA) values across all columns for each dataset.  
+   The results are compiled into a unified table using the `gt` package for readability, allowing quick visual assessment of data completeness before deeper analysis.
+
+By running these diagnostics immediately after loading and previewing (`glimpse`) the data, we ensure:
+- Field names are standardized and comparable.
+- Missing data patterns are identified early.
+- Subsequent analytical steps (profit computation, clustering, or regression) are not biased by incomplete records.
+
+```{r}
+# ---- Column Overview ----
+# Extract column names from each dataset
+colnames_pnl  <- names(pnl_cb)
+colnames_ama  <- names(ama_success)
+colnames_intl <- names(intl_sale)
+
+# Display as gt tables for readability
+gt::gt(data.frame(Dataset = "pnl_cb", Column = colnames_pnl))
+gt::gt(data.frame(Dataset = "ama_success", Column = colnames_ama))
+gt::gt(data.frame(Dataset = "intl_sale", Column = colnames_intl))
+
+# ---- Missing Value Summary Function ----
+check_missing <- function(df, dataset_name) {
+  df %>%
+    summarise(across(everything(), ~ sum(is.na(.)))) %>%
+    pivot_longer(everything(), names_to = "column", values_to = "missing_count") %>%
+    mutate(dataset = dataset_name) %>%
+    arrange(desc(missing_count))
+}
+
+# Apply the function to all three datasets
+missing_pnl  <- check_missing(pnl_cb,  "pnl_cb")
+missing_ama  <- check_missing(ama_success, "ama_success")
+missing_intl <- check_missing(intl_sale, "intl_sale")
+
+# Combine summaries into one table
+missing_summary <- bind_rows(missing_pnl, missing_ama, missing_intl)
+
+# Display null counts
+gt::gt(missing_summary) %>%
+  gt::fmt_number(columns = "missing_count", decimals = 0)
+
+```
+# Phase I: P & L Combined Dataset Analysis and Visualization
+
+## Profit and Relative Margin Calculation
+
+After confirming schema consistency and inspecting for missing values, the next step focuses on quantifying profitability across platforms.  
+Unlike traditional e-commerce datasets that capture transactions from **factory to customer**, this dataset represents **intermediate arbitrage activity** — where sellers act as intermediaries between multiple online marketplaces to profit from price differences.
+
+In this context:
+
+- **`mrp_old`** represents the **original or baseline cost** of each product (analogous to a supplier price).
+- **Platform-specific `*_mrp`** columns (e.g., `amazon_mrp`, `flipkart_mrp`, `myntra_mrp`) represent the **selling prices** listed on various e-commerce platforms.
+- The difference between each platform’s `*_mrp` and `mrp_old` reflects the **absolute profit** earned through price arbitrage.
+- The **relative profit** (or *profit margin*) normalizes this difference as a percentage of cost, providing a standardized measure of return across platforms.
+
+By creating both **absolute profit** and **relative profit** variables, we can later compare:
+
+1. Which platforms yield the highest or lowest average margins,
+2. How consistently profitable each platform is across the dataset, and  
+3. Whether arbitrage opportunities vary structurally between domestic (e.g., Flipkart, Myntra) and international platforms (e.g., Amazon Global, Ajio).
+
+This transformation sets the foundation for exploratory visualization and profitability comparison across all platforms.
+
+```{r}
+pnl_cb <- pnl_cb %>%
+  mutate(
+    platform_profit_ajio     = ajio_mrp - mrp_old,
+    platform_profit_amazon   = amazon_mrp - mrp_old,
+    platform_profit_amafba   = amazon_fba_mrp - mrp_old,
+    platform_profit_flipkart = flipkart_mrp - mrp_old,
+    platform_profit_limeroad = limeroad_mrp - mrp_old,
+    platform_profit_myntra   = myntra_mrp - mrp_old,
+    platform_profit_paytm    = paytm_mrp - mrp_old,
+    platform_profit_snapdeal = snapdeal_mrp - mrp_old,
+    profit_relative_ajio     = (ajio_mrp - mrp_old) / mrp_old * 100,
+    profit_relative_amazon   = (amazon_mrp - mrp_old) / mrp_old * 100,
+    profit_relative_amafba   = (amazon_fba_mrp - mrp_old) / mrp_old * 100,
+    profit_relative_flipkart = (flipkart_mrp - mrp_old) / mrp_old * 100,
+    profit_relative_limeroad = (limeroad_mrp - mrp_old) / mrp_old * 100,
+    profit_relative_myntra   = (myntra_mrp - mrp_old) / mrp_old * 100,
+    profit_relative_paytm    = (paytm_mrp - mrp_old) / mrp_old * 100,
+    profit_relative_snapdeal = (snapdeal_mrp - mrp_old) / mrp_old * 100,
+  )
+
+```
+## Visualization: Average Arbitrage Profit Margin by Platform
+
+To translate the calculated profit metrics into actionable business insights, this visualization summarizes and compares the **average relative profit margins** across all platforms.
+
+Each bar represents the **mean profit margin (%)** for a platform, computed as the average of individual product-level margins:
+
+\[
+\text{Mean Profit Margin}_{platform} = 
+\frac{1}{N} \sum_{i=1}^{N}
+\left(
+\frac{\text{Platform Price}_i - \text{Original Price}_i}{\text{Original Price}_i} \times 100
+\right)
+\]
+
+This provides a standardized measure of how much higher (or lower) each platform typically prices products relative to their original cost.
+
+
+This plot helps identify:
+- Which platforms yield **higher average returns** for arbitrage sellers (potentially more lucrative for cross-listing),
+- Which platforms exhibit **lower or even negative margins**, signaling weaker resale opportunities or oversaturated pricing,
+- And how margins distribute across domestic vs. international marketplaces.
+
+Platforms are **reordered by average margin**, and labels are angled for readability.  
+This visual overview serves as an entry point for deeper comparative analysis, where future steps may examine **variance, volatility**, or **category-level differences** in profitability.
+
+```{r}
+margin_summary <- pnl_cb %>%
+  summarise(
+    across(starts_with("profit_relative_"), mean, na.rm = TRUE)
+  ) %>%
+  pivot_longer(everything(), names_to = "platform", values_to = "avg_margin")
+
+
+ggplot(margin_summary, aes(x = reorder(platform, avg_margin), y = avg_margin, fill = platform)) +
+  geom_col(show.legend = FALSE) +
+  labs(
+    title = "Average Arbitrage Profit Margin by Platform",
+    x = "Platform",
+    y = "Average Margin (%)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(face = "bold", size = 14)
+  )
+
+```
+
+The bar chart above visualizes the **average arbitrage profit margin (%)** across all platforms based on the relative difference between each platform’s listed price and the product’s original price (*MRP Old*).  
+
+From the chart, we observe a clear pattern:
+- **Amazon** and **Amazon FBA** show the **highest average margins**, both nearing 2%, indicating that resale opportunities or listing markups tend to be strongest on these two marketplaces.  
+- **Limeroad** and **Flipkart** follow closely behind, maintaining relatively stable profit levels above 1.6%, suggesting moderate resale potential.  
+- **Ajio**, **Snapdeal**, and **Paytm** cluster near the mid-range, indicating balanced but less aggressive markups.
+- **Myntra** exhibits the **lowest average margin (~1.1%)**, implying tighter pricing competition or less favorable resale conditions.
+
+Overall, the distribution shows **positive average margins across all platforms**, confirming that sellers in this dataset typically list products above their original cost, generating consistent—though modest—returns.  
+However, the small variation in percentage differences also suggests that **cross-platform arbitrage opportunities may be limited**, as most platforms exhibit similar profit behaviors within a narrow 1%–2% band.  
+
+## Category-Level Margins Across Years
+
+After comparing platform-level averages, the next step is to explore **how profit margins differ across product categories** and whether these category trends remain stable over time.  
+This section examines each product type (e.g., *Kurta*, *Kurta Set*, *Tops*, *Gown*) to identify which categories generate higher resale or arbitrage margins.  
+
+By faceting the visualization by year (2021 and 2022), we can observe whether these category-based profit patterns shift over time — for instance, whether *Kurta* consistently remains the most profitable item type, or whether any categories show improvement or decline.  
+
+This dual perspective (category + year) helps distinguish between **structural profitability differences** among products and **temporal effects** across years.
+
+
+```{r}
+# ---- Category-Level Margins by Year ----
+facet_category_year <- pnl_cb %>%
+  select(year, category, starts_with("profit_relative_")) %>%
+  pivot_longer(
+    cols = starts_with("profit_relative_"),
+    names_to = "platform",
+    values_to = "margin"
+  ) %>%
+  group_by(year, category) %>%
+  summarise(avg_margin = mean(margin, na.rm = TRUE)) %>%
+  ungroup()
+
+# ---- Plot with facet by year ----
+ggplot(facet_category_year, aes(x = reorder(category, avg_margin), y = avg_margin, fill = category)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  facet_wrap(~year) +
+  labs(
+    title = "Average Profit Margin by Product Category and Year",
+    x = "Product Category",
+    y = "Average Margin (%)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    strip.text = element_text(face = "bold", size = 12)
+  )
+
+```
+
+From the faceted category-year visualization, several key findings emerge:
+
+1. **Category performance dominates the pattern** — *Kurta* products consistently yield the highest average margins across both years, while *Tops* and *Kurta Sets* show moderate margins.  
+   This reinforces that **product type, not time**, is the primary determinant of profitability.
+
+2. **Minimal variation between years** — The average margins for 2021 and 2022 are nearly identical across all categories, confirming that pricing structures and selling strategies remained stable throughout the dataset period.  
+   Yearly differences contribute almost no explanatory power to profit variation.
+
+3. **Low or zero margins in minor categories** —  
+   - The *Gown* category displays near-zero profit margins because its `mrp_old` and `mrp_platform` prices are identical, implying no resale or markup opportunity.  
+     This likely reflects **stagnant or inactive listings** rather than actual market trades.  
+   - The *Nill* category represents missing or misclassified entries with **very few records**, which explains its unstable and unreliable margin behavior.  
+     As noted during the data preparation stage, the dataset is **heavily imbalanced**, with *Kurta* products dominating the sample and most other categories appearing only marginally.
+
+To ensure analytical validity, the profitability analysis proceeds in three tiers:
+
+1. **Category-Level Filtering and Flagging**  
+   - Remove or flag categories with missing or uninformative pricing data (*Nill*, *Gown*).  
+   - Focus on *Kurta*, *Kurta Set*, and *Tops* as the primary active, profit-generating categories.  
+   - Mark low-activity entries separately to preserve transparency without distorting averages.
+
+2. **Catalog-Level Profit Margin Evaluation**  
+   - Examine how internal product lines (e.g., *Breeze-4*, *Moments*, *Four Gems 2*) perform within their broader categories.  
+   - Identify which design collections or seasonal catalogs drive the highest or lowest average profitability.
+
+3. **Cross-Platform and Volatility Analysis**  
+   - Assess platform correlations and profit distributions to uncover pricing synchronization and risk exposure across e-commerce sites.  
+   - Combine correlation and distribution insights to inform future pricing differentiation and platform strategy.
+
+Together, these layers build a comprehensive picture of how **product structure**, **catalog design**, and **market platform** interact to determine profit outcomes.
+
+## Data Filtering and Category Flagging
+
+Before analyzing profitability across catalogs, the dataset was refined to ensure validity and interpretability.  
+Records under the **“Nill”** category were removed due to incomplete or misclassified information, as these entries lack meaningful product or pricing context.  
+Meanwhile, entries in the **“Gown”** category were retained but marked as *Low_Activity* because earlier data inspection revealed that most *Gown* items had identical `mrp_old` and platform MRP values, resulting in **zero profit margins**.
+
+This filtering step ensures that subsequent analyses focus primarily on **active, profit-generating categories** such as *Kurta*, *Kurta Set*, and *Tops*, while still preserving visibility into low-activity segments for completeness.
+
+```{r}
+pnl_cb_filtered <- pnl_cb %>%
+  filter(!category %in% c("Nill")) %>%
+  mutate(category_flag = if_else(category == "Gown", "Low_Activity", "Active"))
+
+```
+## Catalog-Level Profit Margin Analysis
+
+With the dataset filtered, this section examines **average profit margins across catalogs within each category**.  
+The `catalog` variable represents product lines or style collections (e.g., *Breeze-4*, *Colors-7*, *Four Gems 2*) under the same product category such as *Kurta* or *Tops*.  
+Analyzing margins at the catalog level helps reveal which internal product lines or design collections contribute most to overall profitability.
+
+Each bar in the visualization represents the **average relative profit margin (%)** of a catalog, calculated across all e-commerce platforms.  
+Faceting by category allows for side-by-side comparison, showing how catalog-level pricing performance differs across product types while controlling for category effects.
+
+```{r}
+catalog_summary <- pnl_cb_filtered %>%
+  select(category, catalog, starts_with("profit_relative_")) %>%
+  pivot_longer(cols = starts_with("profit_relative_"),
+               names_to = "platform", values_to = "margin") %>%
+  group_by(category, catalog) %>%
+  summarise(avg_margin = mean(margin, na.rm = TRUE)) %>%
+  arrange(desc(avg_margin))
+ggplot(catalog_summary, aes(x = reorder(catalog, avg_margin),
+                            y = avg_margin, fill = category)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  facet_wrap(~category, scales = "free_y") +
+  labs(title = "Average Profit Margin by Catalog and Category",
+       x = "Catalog", y = "Average Margin (%)") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold", size = 14))
+
+```
+
+The catalog-level profit margin analysis reveals strong heterogeneity within and across categories.  
+Each catalog’s performance reflects not only its pricing flexibility across platforms but also underlying demand, promotional exposure, and possibly stock rotation behavior.
+
+### Kurta Category — Primary Profit Driver
+
+- **Breeze-4 (Highest Margin ~7–8%)**  
+  Breeze-4 consistently leads in profitability across all platforms. Its high relative margin suggests effective price differentiation between platforms (potentially better discount management or exclusive listings).  
+  **Recommendation:** Maintain current pricing strategy but monitor competitive pricing on major marketplaces (e.g., Amazon, Ajio). Consider scaling this pricing model to similar catalogs (*Moments*, *Colors-8*).
+
+- **Moments & Colors-8 (Moderate–High Margin ~5–6%)**  
+  These catalogs perform well but slightly below Breeze-4, indicating a narrower profit spread across platforms. They likely face either higher competition or lower list price diversity.  
+  **Recommendation:** Introduce controlled seasonal promotions or platform-specific bundles to increase perceived exclusivity. Explore differentiated product photography or feature placements to sustain margins.
+
+- **Colors-7 (Moderate Margin ~4%)**  
+  Solid, mid-range profitability. Its name suggests a color-themed line — possibly a broader SKU mix diluting price advantage.  
+  **Recommendation:** Streamline SKUs with historically better margins and reduce low-velocity listings to avoid inventory holding costs that erode effective profit.
+
+- **Mix & Surmaya (Low Margin ≤1%)**  
+  These catalogs underperform despite being part of the Kurta category, implying limited platform variation or outdated stock. They might have consistent pricing across sites, eliminating arbitrage potential.  
+  **Recommendation:** Reassess catalog visibility, reprice outdated SKUs, and consider cross-promotional discounts tied to high-performing lines (e.g., “Buy 1 from Breeze-4, get 10% off Mix”).
+
+### Kurta Set Category — Stable but Subordinate Contributor
+
+- **Rozana (Moderate Margin ~5%)**  
+  Rozana shows healthy profitability and signals pricing adaptability. Its margin suggests medium-tier demand, perhaps aided by set combinations that justify higher average order value.  
+  **Recommendation:** Highlight Rozana bundles in marketing materials; experiment with limited-edition color or fabric variants to stimulate demand.
+
+- **Four Gems 2 (Low Margin ~1%)**  
+  Weak profitability indicates static or over-discounted pricing, possibly an old-season collection.  
+  **Recommendation:** Audit the pricing history — if cross-platform differences are minimal, adopt dynamic pricing tools or retire the catalog.
+
+- **Mix & Surmaya (Negligible Margin)**  
+  Similar to Kurta, these entries yield minimal returns and should be deprioritized or merged with stronger catalog lines to simplify inventory.
+
+### Tops Category — Minimal Activity, Weak Margins
+
+- **Mix (Near 0%)**  
+  Tops–Mix offers little to no profit margin. Given the single catalog presence, it likely represents either clearance items or low-traffic listings.  
+  **Recommendation:** Reassess viability of this product type. Unless new catalogs with higher differentiation are introduced, resources should shift toward expanding high-performing Kurta or Kurta Set collections.
+
+### Gown Category — Inactive Segment
+
+- **Mix & Surmaya (0%)**  
+  Both exhibit zero profit, confirming earlier data cleaning findings that `mrp_old` and `platform_mrp` values are identical. This suggests inactive listings or test SKUs that were uploaded but never repriced or promoted.  
+  **Recommendation:** Remove or revamp the Gown line. If the brand intends to retain this category, future listings must introduce meaningful price variation across marketplaces to enable any arbitrage opportunity.
+
+### Strategic Summary
+
+| Category | Top Catalogs | Action Priority | Strategic Focus |
+|-----------|--------------|----------------|-----------------|
+| **Kurta** | Breeze-4, Moments, Colors-8 | ⭐⭐⭐⭐ | Maintain pricing gaps; replicate success factors across similar product lines |
+| **Kurta Set** | Rozana | ⭐⭐⭐ | Refine bundle presentation; optimize set pricing |
+| **Tops** | Mix | ⭐ | Evaluate discontinuation or redesign |
+| **Gown** | Mix, Surmaya | ⚠️ | Likely inactive – reprice or retire listings |
+
+Overall, the data demonstrates that profitability is **catalog-concentrated** and **category-anchored**, not time-dependent.  
+The immediate next step is to **analyze cross-platform performance within top catalogs (e.g., Breeze-4, Moments)** to uncover which platforms are driving margin strength — this will directly inform future pricing, listing, and promotion strategies.
+
+## Platform-Level Profit Relationship and Volatility Analysis
+
+To complement earlier category and catalog analyses, this section investigates how **profit margins behave across different e-commerce platforms**.  
+The goal is twofold:
+
+1. **Understand inter-platform relationships** — whether certain platforms mirror each other’s pricing trends (indicating low arbitrage potential) or act independently (offering pricing leverage).  
+2. **Measure profit volatility** — to identify which marketplaces are stable versus those with unpredictable or high-risk profit swings.
+
+Together, these insights clarify where strategic pricing adjustments or catalog placements can maximize profitability while minimizing exposure to unstable markets.
+
+```{r}
+pnl_cb %>%
+  select(starts_with("profit_relative_")) %>%
+  cor(use = "pairwise.complete.obs") %>%
+  ggcorrplot::ggcorrplot(lab = TRUE)
+
+```
+
+The heatmap shows the **pairwise correlation of profit margins** between platforms. Each cell indicates how strongly two platforms’ profit changes move together (from –1 = opposite to +1 = identical).
+
+**What Happened:**
+- The majority of platforms, including *Snapdeal*, *Paytm*, *Myntra*, and *Limeroad*, exhibit **strong correlations (0.8–0.9)**.  
+  → This suggests that price adjustments or discount trends are largely synchronized across these marketplaces.
+- *Amazon* and *Amafba* have a **perfect correlation (1.0)**, confirming they share identical price structures (likely data duplication or same marketplace backend).  
+- *Ajio* diverges from others — correlating strongly with *Snapdeal (1.0)* but weakly with *Amazon (0.5)*.  
+  → This indicates Ajio’s pricing sometimes operates independently, possibly due to exclusive brand partnerships or different promotional calendars.
+
+**Business Insights:**
+- **High-correlation platforms** (Myntra, Paytm, Limeroad, Snapdeal) can follow unified pricing strategies — simplifying repricing automation and maintaining consistent brand perception.  
+- **Low-correlation platforms** (e.g., Ajio vs. Amazon) present opportunities for **cross-platform pricing differentiation**.  
+  → Businesses can experiment with selective markdowns or limited-time offers where platforms are less synchronized to capture margin gaps.
+- This helps the company allocate pricing effort more efficiently — *standardize where behavior is predictable*, and *strategically differentiate where it’s not*.
+
+
+```{r}
+pnl_cb %>%
+  pivot_longer(starts_with("profit_relative_"), names_to = "platform", values_to = "margin") %>%
+  ggplot(aes(x = platform, y = margin, fill = platform)) +
+  geom_boxplot(show.legend = FALSE) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+The boxplot visualizes the **distribution of profit margins** for each platform, highlighting median margins, variability, and outliers.
+
+**What Happened:**
+- Most platforms cluster around **similar median profit margins (~2–3%)**, implying consistent overall pricing across the market.  
+- However, **volatility varies dramatically**:
+  - *Amazon* and *Amafba* display **wide spreads** and extreme outliers (both high positive and negative margins).  
+    → These platforms allow aggressive discounting and premium pricing, indicating high-risk, high-reward potential.  
+  - *Myntra*, *Paytm*, and *Limeroad* have **tighter, more stable distributions**, showing steady profitability with minimal extreme cases.  
+  - *Ajio* lies in between — moderate volatility that may reflect flash sales or unique pricing events.
+
+**Business Insights:**
+- **Stable platforms** (Myntra, Paytm, Limeroad) are ideal for **consistent profit retention** and reliable inventory rotation.  
+- **Volatile platforms** (Amazon, Amafba) can be leveraged for **strategic promotions or dynamic pricing tests** — targeting high-margin opportunities while monitoring downside risk.  
+- A balanced strategy would use steady platforms for **core SKUs** and volatile ones for **experimental or high-visibility catalogs**, maximizing overall profit resilience.
+
+# Phase I Continued: P & L Combined Dataset Predictive Modeling and Profit Classification
+
+## Transitioning from Descriptive Analysis to Predictive Strategy
+
+Following the exploratory assessment of platform performance, pricing volatility, and catalog-level profitability, the analysis now advances toward a **predictive modeling phase**.  
+This stage extends beyond describing historical trends — it focuses on **forecasting which products are most likely to achieve higher profit margins**.
+
+The objective of this section is to classify each product into **High-Profit** or **Low-Profit** segments in order to:  
+- Determine the **key drivers of profitability**, such as product category, catalog affiliation, platform pricing, and historical margins;  
+- Build an **interpretable, data-driven model** to guide listing optimization, pricing strategy, and cross-platform allocation; and  
+- Convert analytical insights into **actionable recommendations** that improve decision-making and financial performance.
+
+To achieve this, we will construct a binary profit indicator and apply baseline classification models — including **logistic regression** and **tree based algorithms** — to evaluate predictive accuracy and isolate the most influential business factors.
+
+
+## Creating the High-Profit Classification Target
+
+To transition from descriptive analytics to predictive modeling, we first define a **binary classification label** that identifies which products are high-margin performers.
+
+The logic is as follows:
+- Compute each product’s **average relative profit margin** across all e-commerce platforms.
+- Assign a label of **1 (HighProfit)** to items in the **top 25%** of margins and **0 (LowProfit)** otherwise.
+
+This binary target serves as the foundation for subsequent logistic regression and decision tree modeling.
+
+
+```{r}
+# --- Create High Profit Classification Target ---
+
+library(dplyr)
+
+# Identify all relative margin columns
+rel_cols <- grep("^profit_relative_", names(pnl_cb), value = TRUE)
+
+# Compute average relative profit margin and binary label
+pnl_cb <- pnl_cb %>%
+  mutate(
+    avg_rel_margin = rowMeans(across(all_of(rel_cols)), na.rm = TRUE),
+    HighProfit = as.integer(avg_rel_margin >= quantile(avg_rel_margin, 0.75, na.rm = TRUE))
+  )
+
+# Check target distribution
+table(pnl_cb$HighProfit, useNA = "ifany")
+
+```
+The resulting `HighProfit` variable indicates whether a product belongs to the upper quartile of profitability across all online platforms.  
+Inspecting the label distribution ensures class balance before model training. In most real-world retail datasets, a 1:3 ratio between high- and low-profit items is typical, which is acceptable for binary classification.
+
+##  Feature Selection and Model Data Preparation  
+
+To prepare the dataset for profit classification, we must first define which columns meaningfully contribute to predictive performance and which should be excluded.  
+This step ensures the model learns from **causal business drivers** (e.g., pricing, category, or catalog mix) rather than **direct profit outcomes** or **non-informative identifiers**.
+
+###  Features Retained
+The selected columns represent interpretable, business-relevant predictors:
+- **Categorical variables** – `category`, `catalog`, `size_variant`, and `year`: capture structural differences in product type, seasonal context, and product-line segmentation.  
+- **Numeric price-level variables** – `mrp_old`, `ajio_mrp`, `amazon_mrp`, `amazon_fba_mrp`, `flipkart_mrp`, `limeroad_mrp`, `myntra_mrp`, `paytm_mrp`, `snapdeal_mrp`: reflect pricing strategies across platforms and serve as potential predictors of margin performance.
+
+###  Features Excluded
+The following variables were intentionally omitted to ensure analytical integrity:
+- **Identifiers:** `index`, `sku`, and `style_id` — unique row or item IDs that carry no predictive meaning.  
+- **Derived profit metrics:** `platform_profit_*` and `profit_relative_*` — these are target-dependent variables derived from selling price and cost, and including them would cause **data leakage** (the model would "see" the answer).  
+- **Intermediate calculation fields:** such as `tp` (transaction price) and `final_mrp_old`, which are either redundant or already represented by the selected MRP columns.  
+- **Sparse or non-informative categories:** categories like `Nill` and low-activity segments such as `Gown` have been flagged or excluded earlier due to limited representation and zero-margin behavior.
+
+This careful feature selection ensures that downstream models learn **what drives profit**, not **what directly defines it**, preserving both interpretability and business actionability.
+
+```{r}
+# --- Define relevant and irrelevant columns ---
+
+# Columns to keep (core features)
+feature_cols <- c(
+  # categorical
+  "category", "catalog", "size_variant", "year",
+  # numeric (price-level features)
+  "mrp_old", "ajio_mrp", "amazon_mrp", "amazon_fba_mrp",
+  "flipkart_mrp", "limeroad_mrp", "myntra_mrp", "paytm_mrp", "snapdeal_mrp"
+)
+
+# Build model-ready dataframe
+model_df <- pnl_cb %>%
+  select(all_of(feature_cols), HighProfit) %>%
+  mutate(across(c(category, catalog, size_variant, year), as.factor))
+
+# Verify structure
+glimpse(model_df)
+
+```
+After filtering and transformation, the resulting `model_df` contains 2,586 observations and 14 well-defined predictors plus the binary target `HighProfit`.  
+Categorical variables were converted into factors, and all numeric price variables were retained in double format for model compatibility.  
+
+This refined dataset now provides a **clean, leakage-free foundation** for predictive modeling.  
+It isolates the variables that genuinely influence profitability — such as catalog design, price structure, and category composition — setting the stage for logistic regression and tree-based classification to evaluate **which business levers most strongly predict high profit margins.**
+
+
+## Note on Model Selection and Multicollinearity
+
+While the correlation heatmap on profit margin across multiplatform reveals near-perfect multicollinearity among platform-specific MRPs,  
+this issue primarily affects **parametric models** like *logistic regression*, where redundant predictors can distort coefficient estimation.
+
+For **regularized models** (e.g., LASSO, Ridge) and **tree-based algorithms** (e.g., Decision Trees, Random Forests),  
+multicollinearity poses minimal risk, as these approaches either penalize redundant terms or split features based on information gain rather than linear dependence.
+
+1. **Logistic Regression Baseline**  
+   Logistic regression assumes independence among predictors, so to avoid instability from redundant price variables, this version keeps only:  
+   - A single representative cost anchor (**`mrp_old`**)  
+   - An aggregated pricing indicator (**`price_ratio`**) defined as  
+     *average selling price across all platforms divided by `mrp_old`*  
+
+   This provides both a measure of base cost and relative market pricing strength, allowing the model to classify high-profit products using cost level, pricing efficiency, and categorical descriptors.
+
+2. **Tree-Based Models (Decision Tree / Random Forest)**  
+   Tree-based learners are robust to multicollinearity and can leverage nonlinear interactions.  
+   Therefore, these models retain **all individual platform MRPs**, enabling them to detect pricing asymmetries (e.g., Amazon vs Ajio) that may signal platform-specific profitability opportunities.
+
+Together, these two complementary setups allow us to compare:
+- How well a parsimonious, interpretable logistic model performs using condensed economic indicators, and  
+- How much additional predictive lift tree-based algorithms gain from richer platform-level detail.
+```{r}
+# for logistic regression 
+pnl_cb <- pnl_cb %>%
+  mutate(
+    avg_sell_price = rowMeans(across(ends_with("_mrp")), na.rm = TRUE),
+    price_ratio = avg_sell_price / mrp_old
+  )
+
+logit_df <- pnl_cb %>%
+  dplyr::select(category, catalog, size_variant, year, mrp_old, price_ratio, HighProfit)
+
+```
+
+## Train–Test Split for Model Validation
+
+To ensure robust and unbiased model evaluation, the dataset is divided into **training** and **testing** subsets.  
+This prevents information leakage and allows us to assess each model’s ability to generalize to unseen data.
+
+A **stratified random split** is performed using the binary target variable `HighProfit`, preserving the ratio of high- and low-profit cases across subsets.  
+Following standard data science practice:
+- **70%** of the data is allocated to **training** (for model fitting and learning),  
+- **30%** is reserved for **testing** (for performance evaluation).
+
+Two separate datasets are used for modeling:
+- The **logistic regression dataset (`logit_df`)** includes engineered predictors such as `mrp_old` and `price_ratio`.  
+- The **tree-based dataset (`model_df`)** retains all platform-specific price features (`*_mrp`) to allow complex, non-linear interaction learning.
+
+This ensures that both model types are trained and validated on consistent sample splits, while reflecting their respective feature representations.
+
+
+```{r}
+# --- Train–Test Split for Predictive Modeling ---
+
+library(caret)
+set.seed(123)  # for reproducibility
+
+# Stratified split by HighProfit target (70% train / 30% test)
+train_idx <- createDataPartition(model_df$HighProfit, p = 0.7, list = FALSE)
+
+# Logistic regression dataset
+logit_train <- logit_df[train_idx, ]
+logit_test  <- logit_df[-train_idx, ]
+
+# Tree-based dataset
+tree_train  <- model_df[train_idx, ]
+tree_test   <- model_df[-train_idx, ]
+
+# Verify target proportions in each subset
+prop.table(table(logit_train$HighProfit))
+prop.table(table(logit_test$HighProfit))
+
+# Check dimensions
+dim(logit_train)
+dim(logit_test)
+dim(tree_train)
+dim(tree_test)
+
+```
+## Baseline Logistic Regression Model
+
+With the training and testing datasets prepared, we begin by developing a **baseline logistic regression model** to classify whether a product is likely to be **high profit (1)** or **low profit (0)**.  
+
+The logistic regression provides a **transparent and interpretable baseline**:
+- It quantifies how predictors such as product **category**, **catalog**, **size**, and **price ratio** influence profitability.  
+- It establishes a benchmark accuracy level before introducing more complex, non-linear models (e.g., Random Forest or XGBoost).  
+- Coefficient signs and magnitudes directly indicate which features **increase or decrease** the probability of high profit.  
+
+This model is trained on the `logit_train` dataset and evaluated on `logit_test` using standard performance metrics.
+```{r}
+# --- Baseline Logistic Regression Model ---
+
+# Train logistic regression
+logit_model <- glm(HighProfit ~ ., data = logit_train, family = binomial)
+
+# Model summary for interpretation
+summary(logit_model)
+
+# Predict probabilities on test data
+logit_pred_prob <- predict(logit_model, newdata = logit_test, type = "response")
+
+# Convert probabilities to binary predictions (cutoff = 0.5)
+logit_pred_class <- ifelse(logit_pred_prob >= 0.5, 1, 0)
+
+# Evaluate model performance
+library(caret)
+conf_matrix <- confusionMatrix(
+  as.factor(logit_pred_class),
+  as.factor(logit_test$HighProfit),
+  positive = "1"
+)
+
+# Display confusion matrix and summary metrics
+conf_matrix
+
+# --- ROC–AUC Evaluation ---
+library(pROC)
+roc_obj <- roc(logit_test$HighProfit, logit_pred_prob)
+auc(roc_obj)
+
+# Plot ROC Curve
+plot(roc_obj, col = "blue", main = "ROC Curve: Logistic Regression Baseline")
+abline(a = 0, b = 1, lty = 2, col = "gray")
+
+# --- Optional: Feature Importance ---
+library(broom)
+coeff_importance <- tidy(logit_model) %>%
+  arrange(desc(abs(estimate)))
+
+head(coeff_importance, 10)
+
+```
+
+The baseline logistic regression model was trained using unregularized maximum likelihood estimation on predictors including *catalog*, *category*, *year*, *size_variant*, and the derived *price_ratio* (`avg_sell_price / mrp_old`).  
+
+Although the model converged successfully, the results indicate **complete separation and overfitting**:
+
+- **All performance metrics** (Accuracy, Sensitivity, Specificity, AUC) are equal to **1.0**, suggesting the model predicts every observation perfectly — an outcome that is statistically implausible in real-world data.  
+- The **ROC curve** shows a vertical line reaching the top-left corner, confirming a perfect classification boundary with **AUC = 1**.  
+- The **coefficient table** reveals extremely large standard errors (e.g., >40,000), near-zero z-statistics, and **p-values ≈ 1.0**, meaning no predictors are statistically significant despite the perfect accuracy.
+
+These findings confirm that the model suffers from a **perfect separation problem** — a scenario in which one or more predictors (such as catalog identifiers or correlated price variables) perfectly separate high- and low-profit cases. This typically arises when:
+- The dataset is **small or imbalanced**,  
+- Certain categorical features encode the target almost exactly, or  
+- Strong **multicollinearity** (e.g., among multiple MRP variables) causes unstable parameter estimation.
+
+### Why This Is Problematic
+
+Perfect separation and multicollinearity cause instability in logistic regression:
+
+- Coefficients grow toward infinity, producing unreliable parameter estimates.  
+- Standard errors inflate, making p-values meaningless.  
+- The model **memorizes** rather than **generalizes**, resulting in overfitting and failure to perform on unseen data.
+
+In short, while the baseline model appears “perfect,” it is statistically invalid and provides **no real predictive insight**.
+
+
+## Apply Lasso and Ridge
+
+To correct the instability and overfitting observed in the baseline logistic regression, the next step is to apply **regularized logistic models** using penalized maximum likelihood estimation.  
+Regularization constrains the size of model coefficients through a penalty term, allowing the algorithm to balance predictive performance with generalizability.  
+
+In business terms, this step helps ensure that the model identifies **genuine drivers of profitability**—such as pricing ratios or catalog effects—rather than memorizing noise or platform-specific artifacts.  
+
+Specifically, we will explore two forms of regularization:
+
+- **LASSO (L1)**: applies an absolute-value penalty that drives small or redundant coefficients to zero, performing **automatic feature selection** and yielding a more interpretable model.  
+- **RIDGE (L2)**: applies a squared penalty that shrinks correlated predictors toward each other, **stabilizing coefficient estimates** and mitigating variance from multicollinearity.
+
+By introducing a penalty parameter (λ), these models can:
+- Reduce **overfitting** and improve generalization to unseen data,  
+- Handle **multicollinearity** among overlapping MRP or catalog variables, and  
+- Highlight which product, pricing, or categorical factors truly influence high profit margins.
+
+In the following code section, we implement both **LASSO** and **Ridge** regularized logistic regressions using the `glmnet` package. We will compare their predictive accuracy, AUC, and coefficient paths to evaluate which model best balances interpretability and performance for business decision-making.
+
+
+```{r}
+library(glmnet)
+
+# Prepare input matrices
+x <- model.matrix(
+  HighProfit ~ price_ratio + mrp_old + category + catalog + size_variant + year,
+  data = logit_train
+)[, -1]  # remove intercept column
+
+y <- logit_train$HighProfit
+# Fit LASSO (L1)
+lasso_model <- cv.glmnet(x, y, alpha = 1, family = "binomial", nfolds = 10)
+
+# Fit RIDGE (L2)
+ridge_model <- cv.glmnet(x, y, alpha = 0, family = "binomial", nfolds = 10)
+
+# Optimal lambda (penalty strength)
+lasso_lambda <- lasso_model$lambda.min
+ridge_lambda <- ridge_model$lambda.min
+
+# Prepare test set matrices
+x_test <- model.matrix(
+  HighProfit ~ price_ratio + mrp_old + category + catalog + size_variant + year,
+  data = logit_test
+)[, -1]
+
+y_test <- logit_test$HighProfit
+
+# Predictions
+pred_lasso <- predict(lasso_model, newx = x_test, s = lasso_lambda, type = "response")
+pred_ridge <- predict(ridge_model, newx = x_test, s = ridge_lambda, type = "response")
+
+# Convert to binary
+class_lasso <- ifelse(pred_lasso > 0.5, 1, 0)
+class_ridge <- ifelse(pred_ridge > 0.5, 1, 0)
+
+# Evaluate AUC and accuracy
+library(pROC)
+roc_lasso <- roc(y_test, pred_lasso)
+roc_ridge <- roc(y_test, pred_ridge)
+
+cat("AUC (LASSO):", auc(roc_lasso), "\n")
+cat("AUC (RIDGE):", auc(roc_ridge), "\n")
+
+library(caret)
+cat("Confusion Matrix: LASSO\n")
+print(confusionMatrix(factor(class_lasso), factor(y_test)))
+
+cat("Confusion Matrix: RIDGE\n")
+print(confusionMatrix(factor(class_ridge), factor(y_test)))
+
+coef_lasso <- coef(lasso_model, s = lasso_lambda)
+print(coef_lasso)
+coef_ridge <- coef(ridge_model, s = ridge_lambda)
+print(coef_ridge)
+```
+
+After applying LASSO and Ridge regularization, both models delivered exceptionally strong predictive performance and addressed the instability observed in the baseline logistic regression.  
+Regularization added a penalty term (λ) that constrained overfitting, mitigated multicollinearity, and improved interpretability of coefficient estimates.
+
+#### Model Performance Overview
+
+| Model | AUC | Accuracy | Kappa | Sensitivity | Specificity | Balanced Accuracy |
+|:------|:----|:----------|:-------|:--------------|:--------------|:-------------------|
+| **LASSO (L1)** | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 |
+| **Ridge (L2)** | 0.9998 | 0.9703 | 0.918 | 1.000 | 0.882 | 0.941 |
+
+- Both models achieved near-perfect AUCs, showing strong discrimination between high-profit and low-profit observations.
+- The **LASSO model’s perfect accuracy** likely reflects residual class separability rather than realistic generalization, while **Ridge’s slightly lower accuracy** suggests a more credible, well-calibrated result.
+
+
+#### LASSO (L1) — Sparse and Selective Model
+
+The **LASSO model** performed automatic feature selection by forcing small or redundant coefficients to zero.  
+This yields a **parsimonious model** that isolates the most influential predictors driving profitability:
+
+| Retained Predictor | Coefficient | Interpretation |
+|:-------------------|:-------------|:----------------|
+| **price_ratio** | +973.6 | A higher selling-to-cost ratio strongly predicts high profitability. |
+| **mrp_old** | −0.0026 | Older list prices slightly reduce profit probability. |
+| **catalogColors-7** | +4.78 | This catalog category is a key profit driver, possibly tied to higher-margin products. |
+| *(All others)* | 0 | Shrunk to zero — limited standalone predictive contribution. |
+
+**Interpretation:**  
+LASSO identifies a small set of dominant levers — pricing leverage (`price_ratio`) and specific product catalogs — that capture most of the profitability signal.  
+It’s ideal for **feature prioritization** and clear communication of what drives performance at the business level.
+
+
+#### Ridge (L2) — Stable and Comprehensive Model
+
+The **Ridge model** retained all predictors but shrunk their coefficients toward zero, creating a smoother and more generalizable representation.  
+This approach is valuable when predictors are correlated and contribute jointly to profitability.
+
+| Key Coefficients (simplified) | Estimate | Direction |
+|:------------------------------|:----------|:------------|
+| **price_ratio** | +59.13 | Strong positive driver — key profit signal. |
+| **mrp_old** | +0.00004 | Nearly neutral, minimal independent effect. |
+| **catalogColors-7** | +2.33 | High-performing catalog category. |
+| **catalogRozana** | +2.21 | Another strong positive catalog contributor. |
+| **catalogSurmaya** | −0.93 | Negative catalog effect — lower margins or higher discounts. |
+| **categoryKurta** | +0.39 | Mild positive product effect. |
+| **categoryNill** | −0.57 | Negative contributor. |
+| **year** | −0.009 | Slight downward profitability trend over time. |
+
+**Interpretation:**  
+Ridge regression reveals that **profitability is multifactorial**, driven by price positioning and catalog identity, while size and year play secondary roles.  
+It preserves a full-picture understanding without overfitting, making it better suited for **operational forecasting** and continuous monitoring.
+
+
+#### Comparative Insight
+
+| Aspect | LASSO (L1) | Ridge (L2) |
+|:--------|:-------------|:------------|
+| **Feature Selection** | Performs automatic variable elimination (sparse model). | Retains all predictors, stabilizes correlated effects. |
+| **Interpretability** | Very high — highlights key business levers. | Moderate — provides a balanced overview of all variables. |
+| **Generalization** | Can overfit in perfectly separable data. | More robust and realistic generalization. |
+| **Use Case** | Diagnostic insight, key driver identification. | Predictive deployment, forecasting, continuous modeling. |
+
+
+### Strategic Takeaways and Recommendation
+
+The application of **regularized logistic regression** provides both interpretability and robustness in understanding what drives product profitability.
+
+- **LASSO (L1) Regression** pinpoints the *core profitability drivers* — notably, the **price ratio** and specific **catalog categories**.  
+  Its sparse structure makes it ideal for **diagnostic insight** and **management reporting**, revealing which levers (pricing, catalog design, product lines) have the greatest impact on margin performance.
+
+- **Ridge (L2) Regression** produces a *comprehensive and stable prediction framework* by retaining all features and mitigating multicollinearity.  
+  This approach is better suited for **operational forecasting** and **deployment** within production pipelines, where consistent accuracy and generalization are key.
+
+Together, these models provide a balanced analytical framework:
+- Use **LASSO** to guide **strategic decisions** and feature prioritization.
+- Use **Ridge** to ensure **predictive reliability** and scalable model performance.
+
+**Recommendation:**  
+Adopt a two-tier modeling strategy — deploy **Ridge** for automated profit prediction and monitoring, while leveraging **LASSO** in executive dashboards or exploratory analysis to highlight actionable insights.  
+This combined approach ensures the organization maintains both **analytical clarity** and **predictive stability** in its profitability modeling.
+
+## Decision Tree
+
+After examining linear models (logistic regression, LASSO, and Ridge), we now turn to a **tree-based model** to explore nonlinear feature interactions and hierarchical decision rules.  
+A **CART (Classification and Regression Tree)** model is particularly useful for interpretability — it provides a clear visualization of how categorical and numeric variables interact to determine high vs. low profitability.
+
+In this step, we:
+
+1. Convert the target variable `HighProfit` to a factor to ensure proper classification behavior.  
+2. Fit a **Decision Tree** using `rpart`, allowing the model to automatically discover key split points (e.g., on price ratios or catalog groupings).  
+3. Visualize the tree to interpret the most influential business rules.  
+4. Evaluate predictive performance using a confusion matrix on the test set.
+
+This tree serves as our **baseline nonlinear model**, highlighting key thresholds and categorical splits that drive profitability.  
+Subsequent ensemble models — **Random Forest** and **Gradient Boosting** — will build on this foundation to improve accuracy and generalization by combining multiple trees.
+
+```{r}
+library(rpart)
+library(rpart.plot)
+library(caret)
+
+# --- Ensure target is a factor in both train and test sets ---
+tree_train$HighProfit <- factor(tree_train$HighProfit, levels = c(0, 1))
+tree_test$HighProfit  <- factor(tree_test$HighProfit,  levels = c(0, 1))
+
+# --- Baseline Decision Tree ---
+set.seed(123)
+
+tree_model <- rpart(
+  HighProfit ~ .,
+  data   = tree_train,
+  method = "class",
+  control = rpart.control(cp = 0.01, minsplit = 20)
+)
+
+# Visualize the tree
+rpart.plot(tree_model, main = "Decision Tree for Profit Classification")
+
+# --- Evaluate on Test Data ---
+pred_tree <- predict(tree_model, newdata = tree_test, type = "class")
+# pred_tree is already a factor with levels c("0","1")
+
+conf_mat <- confusionMatrix(pred_tree, tree_test$HighProfit)
+conf_mat
+
+
+```
+
+The decision tree reveals clear **hierarchical rules** driving product profitability.  
+At the top of the tree, **catalog type** and **Amazon MRP thresholds** emerge as the primary split variables — indicating that profitability depends jointly on **platform-specific pricing** and **catalog grouping**.  
+
+Key observations:
+- **Catalog segmentation** (e.g., *Colors-8*, *Four Gems 2*, *Mix*, *Nill*, *Surmaya*) acts as the first discriminator between high- and low-profit products, highlighting differences in pricing strategy or margin structure across catalog vendors.  
+- **Price thresholds** such as `amazon_mrp < 2173`, `mrp_old ≥ 2187`, and `limeroad_mrp ≥ 2396` show **nonlinear breakpoints** — ranges where profitability sharply changes, reflecting optimal pricing bands or cost thresholds.  
+- Deeper branches combine multiple MRPs across platforms (Amazon, Ajio, Limeroad), suggesting that **cross-platform price alignment** influences profit margins.
+
+From a business standpoint, these results provide:
+- **Actionable segmentation rules** for pricing and catalog optimization.  
+- A foundation for **dynamic pricing strategies**, where thresholds can be tuned by platform or product type.  
+- A clear, interpretable baseline for comparing more complex ensemble models (Random Forest, Gradient Boosting).
+
+Next, we extend this framework with ensemble methods to improve predictive accuracy and reduce variance.
+
+## Random Forest — Ensemble Learning for Robust Profit Prediction
+
+While the decision tree offers interpretability and clear business logic, it can be **highly sensitive to small data changes**, leading to overfitting.  
+To address this, we apply a **Random Forest model**, an ensemble of multiple decision trees built on random subsets of both **observations** and **features**.  
+
+This approach stabilizes predictions and captures complex, nonlinear relationships across the dataset.
+
+**Key advantages of Random Forest:**
+- **Reduces variance** by averaging across many decorrelated trees.  
+- **Improves generalization** on unseen data compared to a single CART model.  
+- **Provides variable importance metrics**, identifying which pricing or catalog features contribute most to profitability prediction.
+
+We train the Random Forest using 500 trees and evaluate performance using standard classification metrics (Accuracy, Kappa, Sensitivity, Specificity), followed by a **feature importance plot** to interpret top profitability drivers.
+
+```{r}
+library(randomForest)
+library(caret)
+
+set.seed(123)
+
+# --- Train Random Forest Model ---
+rf_model <- randomForest(
+  HighProfit ~ .,
+  data = tree_train,
+  ntree = 500,
+  mtry = floor(sqrt(ncol(tree_train) - 1)),  # optimal number of features per split
+  importance = TRUE
+)
+
+# --- Evaluate on Test Data ---
+pred_rf <- predict(rf_model, newdata = tree_test, type = "class")
+
+# Confusion Matrix
+conf_rf <- confusionMatrix(pred_rf, tree_test$HighProfit)
+conf_rf
+
+# --- Variable Importance ---
+varImpPlot(rf_model, main = "Feature Importance — Random Forest")
+
+# Optional: numerical importance table
+importance(rf_model)
+```
+
+The Random Forest model achieved **perfect classification performance** on the test data (Accuracy = 1.00, Balanced Accuracy = 1.00), indicating that the ensemble successfully captured complex, nonlinear relationships among pricing and catalog variables.  
+While such flawless performance may partially reflect data structure or limited noise, the variable importance analysis provides valuable business insight into **key profitability drivers**.
+
+#### Core Predictors of Profitability
+- **`mrp_old`** and **`catalog`** are the top two predictors across both Mean Decrease in Accuracy and Gini metrics.  
+  - This underscores that **historical product pricing** (baseline MRP) and **catalog grouping** (vendor or collection identity) are fundamental determinants of profit outcomes.  
+  - High influence of `catalog` suggests that vendor- or collection-level strategy (e.g., Colors-8, Four Gems 2) materially affects margin structure and pricing flexibility.
+- **`amazon_mrp`** and **`amazon_fba_mrp`** follow closely behind, confirming that **Amazon channel pricing** exerts strong leverage over profitability — possibly due to its larger market share or pricing visibility effects.
+- **Secondary platform MRPs** (`ajio_mrp`, `limeroad_mrp`, `myntra_mrp`, etc.) contribute moderately, indicating that cross-platform price consistency matters, but not as decisively as the leading channels.
+
+#### Diminished Predictors
+- Features such as **`size_variant`** and **`year`** have minimal importance, suggesting that product size and listing year play a negligible role in short-term profit differentiation.
+- This supports the conclusion that **pricing and catalog placement**, rather than temporal or product-dimension factors, drive profitability variance.
+
+#### Business Implications
+From a managerial perspective:
+- **Pricing leverage:** Optimizing `mrp_old` and `amazon_mrp` bands could directly lift profit margins. Monitoring these thresholds in dynamic pricing algorithms can enhance yield management.
+- **Catalog strategy:** High-margin catalogs (like Colors-8 or Mix) warrant prioritized promotion, expanded product lines, or preferential placement. Conversely, low-margin catalogs may require renegotiation with suppliers or pricing re-evaluation.
+- **Cross-platform optimization:** Consistency across major marketplaces should be strategically managed — keeping Amazon-linked MRPs within optimal profit-yielding ranges identified by the model.
+
+In summary, the Random Forest model not only enhances predictive reliability but also **translates statistical importance into actionable pricing and merchandising strategies**, reinforcing data-driven decision-making for profit maximization.
+
+## Overall Summary — P&L Combined Dataset
+
+The integrated P&L dataset analysis combined pricing, catalog, and profitability data across multiple online platforms to identify the **structural drivers of high-margin performance**.
+
+### Descriptive Insights
+- Profitability distributions revealed **right-skewed behavior**, where a limited subset of SKUs or catalogs contributes disproportionately to profit.  
+- **Price ratio (`avg_selling_price / mrp_old`)** emerged as a strong visual separator of profitable vs. low-performing items.  
+- Vendor-level (`catalog`) and product-level (`category`) patterns indicated that **brand alignment and catalog strategy** drive consistent profitability differentials across platforms.
+
+### Model Findings
+- **Logistic Regression (baseline)** confirmed the directional relationship between higher pricing ratios and profit likelihood but suffered from multicollinearity and overfitting.  
+- **Regularized Logistic (LASSO & Ridge)** stabilized coefficients, isolating key pricing and catalog variables as the most influential predictors.  
+- **Decision Tree** revealed explicit threshold-based rules, showing that profits cluster around specific MRP and catalog cutoffs (e.g., Amazon MRP ≈ 2,100–2,400 range).  
+- **Random Forest** provided the most reliable predictions (Accuracy = 1.00) and validated that `mrp_old`, `catalog`, and `amazon_mrp` are **core profitability levers**.  
+  - This confirms that both **historical pricing structure** and **platform-specific listing strategy** are decisive for maintaining margins.
+
+### Strategic Takeaways
+- **Pricing optimization**: Profits are driven by effective price anchoring — optimizing `mrp_old` and channel-specific MRP ranges can yield significant gains.  
+- **Catalog management**: Certain catalogs dominate profitability, implying a need for strategic prioritization or supplier renegotiation.  
+- **Cross-platform alignment**: High Amazon MRPs align strongly with profit success, suggesting that consistency across platforms is crucial for maintaining brand value.  
+- **Operational insight**: Product size and year play negligible roles, indicating that **profitability is structural, not seasonal**.
+
+### Business Implications
+This analysis establishes a **data-driven profitability framework** for e-commerce decision-making.  
+The combined use of interpretable (LASSO, Decision Tree) and high-performance (Random Forest) models enables both **strategic insight** and **operational precision** in:
+
+- Dynamic pricing systems  
+- Catalog performance dashboards  
+- Cross-platform profit monitoring pipelines  
+
+
+# Phase II: Amazon Success Dataset — Operational and Sales Analysis
+
+This section focuses exclusively on **fulfillment performance** and **revenue distribution** within Amazon orders.  
+The dataset provides transaction-level details — such as fulfillment method, sales channel, category, and order amount — making it ideal for identifying operational efficiency and product-level revenue patterns.
+
+
+## Fulfillment Performance
+**Goal:** Compare **Fulfilled by Amazon (FBA)** vs. **Merchant Fulfilled** orders to understand their contribution to sales and operational success.
+
+**Visualization Focus:**
+- Volume of orders by fulfillment method (`FBA` vs `Merchant`)
+- Total and average revenue contribution per fulfillment type
+- Courier completion or delay patterns per method
+
+```{r}
+ggplot(ama_success, aes(x = fulfilment, fill = fulfilment)) +
+  geom_bar() +
+  labs(title = "Order Volume by Fulfillment Method", x = "Fulfillment Type", y = "Number of Orders")
+
+ggplot(ama_success, aes(x = fulfilment, y = amount, fill = fulfilment)) +
+  geom_boxplot() + scale_y_log10() +
+  labs(title = "Revenue Distribution across Fulfillment Methods", y = "Order Amount (log scale)")
+
+ggplot(ama_success, aes(x = courier_status, fill = fulfilment)) +
+  geom_bar(position = "fill") +
+  labs(title = "Courier Completion Ratio by Fulfillment Type", y = "Proportion of Orders")
+
+```
+
+#### Order Volume by Fulfillment Method
+- The bar chart shows that **Amazon Fulfillment (FBA)** handles **roughly twice as many orders** as Merchant Fulfilled.  
+- This indicates that most sellers and customers prefer the **Amazon-managed logistics pipeline**, likely due to its convenience, integrated shipping, and faster delivery promise.
+- From a business standpoint, this highlights **FBA’s dominance in operational throughput** — Amazon’s fulfillment infrastructure captures the majority of order volume.
+
+#### Revenue Distribution across Fulfillment Methods
+- The revenue boxplot reveals that while the **median order amount** is fairly similar between Amazon and Merchant Fulfilled orders, **Amazon’s distribution is tighter**, suggesting **more consistent order values**.  
+- Merchant Fulfilled orders show **slightly higher variance and more extreme outliers**, implying occasional large-value sales but less stability overall.
+- This suggests that **Amazon’s managed fulfillment attracts standardized, mid-value orders at scale**, while **Merchant Fulfilled may handle more niche, irregular, or bulk transactions**.
+
+#### Courier Completion Ratio by Fulfillment Type
+- The proportional stacked bar chart indicates that **Amazon Fulfillment has a higher proportion of shipped (completed) orders**, while **Merchant Fulfilled has more unshipped or pending statuses**.  
+- This reinforces Amazon’s **operational reliability advantage** — the FBA network achieves **higher on-time shipment rates**, while Merchant sellers may face capacity or coordination delays.
+
+
+### Business Implications
+
+- **Operational Advantage:** Amazon Fulfillment delivers **superior reliability and scalability**, making it the preferred method for ensuring timely delivery and customer satisfaction.  
+- **Revenue Stability:** The tighter revenue distribution in FBA indicates **predictable earnings per order**, supporting more accurate forecasting and margin control.  
+- **Merchant Trade-off:** Merchant Fulfilled sales may allow **higher flexibility and occasional high-value orders**, but with **higher risk of delays** and inconsistent throughput.
+
+
+Together, these findings directly support the business objective:
+> **Assess fulfillment performance** — by quantifying FBA vs Merchant trade-offs in order scale, revenue stability, and delivery reliability.
+
+
+## Revenue Distribution by Product Attributes
+
+This section analyzes how **product categories** and **size variants** contribute to overall revenue and sales volume.  
+It supports our second business objective:
+> **Identify revenue distribution:** Determine which product segments generate the highest revenue and demand to guide pricing, inventory, and assortment strategies.
+
+
+```{r}
+ama_success %>%
+  group_by(category) %>%
+  summarise(total_sales = sum(amount, na.rm = TRUE),
+            avg_order_value = mean(amount, na.rm = TRUE),
+            total_qty = sum(qty, na.rm = TRUE)) %>%
+  arrange(desc(total_sales)) %>%
+  ggplot(aes(x = reorder(category, total_sales), y = total_sales, fill = avg_order_value)) +
+  geom_col() + coord_flip() +
+  labs(title = "Total Revenue by Product Category",
+       x = "Category", y = "Total Revenue (₹)",
+       fill = "Average Order Value") +
+  theme_minimal()
+
+ama_success %>%
+  group_by(size) %>%
+  summarise(total_qty = sum(qty, na.rm = TRUE)) %>%
+  ggplot(aes(x = reorder(size, total_qty), y = total_qty, fill = size)) +
+  geom_col(show.legend = FALSE) + coord_flip() +
+  labs(title = "Total Quantity Sold by Size Variant",
+       x = "Size Variant", y = "Total Quantity Sold") +
+  theme_minimal()
+```
+
+The analysis highlights clear concentration patterns in both product mix and size demand:
+
+- **Category Insight:**  
+  “Set” and “Kurta” categories generate the highest total revenue, indicating their strong market positioning and contribution to top-line performance.  
+  *Sets* stand out with a higher average order value (₹800+), suggesting premium pricing and strong customer appeal, while *Kurtas* sustain consistent sales volume through wider accessibility.
+
+- **Size Insight:**  
+  The majority of units sold fall within **M, L, and XL** size ranges — the commercial “core” of customer demand.  
+  Sales taper off significantly for smaller (XS–S) and extended (3XL+) sizes, which likely have slower turnover and higher holding costs.
+
+**Strategic Implications:**  
+- Prioritize marketing, production, and restocking efforts for **Set** and **Kurta** categories.  
+- Maintain optimal inventory levels in **M–XL** sizes to match real demand.  
+- Streamline or bundle underperforming SKUs to reduce inventory inefficiency.  
+
+These insights directly support revenue optimization by focusing resources on the most profitable and fast-moving product segments.
+
+
+# Phase III: International Sales Dataset
+
+This phase focuses on analyzing the **International Sales (intl_sale)** dataset to understand global sales performance and revenue trends.  
+The dataset contains transactional-level export data, including **customer names, dates, SKUs, product sizes, quantities (PCS), rates, and gross amounts**.  
+By exploring these variables, this phase aims to uncover key insights into international market behavior and seasonality.  
+
+The analysis primarily addresses the following objectives:
+- **Track international sales trends** over time to identify seasonal fluctuations and peak months.  
+- **Measure total sales quantity and revenue** across different customer segments and time periods.  
+- **Support business decisions** on export planning, pricing strategy, and inventory allocation for international demand cycles.  
+
+This phase transitions from domestic marketplace analysis to global transaction patterns, helping quantify how international operations contribute to overall business profitability.
+
+## Monthly Performance Analysis
+
+To understand international market dynamics, this section analyzes **monthly sales and revenue performance** using the `intl_sale` dataset.  
+By tracking total **gross revenue** and **quantity sold (PCS)** over time, the goal is to uncover **seasonal trends, export performance cycles, and demand fluctuations**.  
+
+This aligns directly with the business objective of identifying **when international markets perform strongest**, supporting data-driven planning for production, inventory, and global marketing strategy.
+
+```{r}
+# --- Monthly International Revenue Trend ---
+ggplot(intl_sale, aes(x = Months, y = `GROSS AMT`, group = 1)) +
+  stat_summary(fun = sum, geom = "line", color = "#0072B2", size = 1.2) +
+  labs(title = "Monthly International Revenue Trend",
+       x = "Month", y = "Total Gross Amount (₹)") +
+  theme_minimal()
+
+# --- Monthly Quantity Trend for International Sales ---
+
+ggplot(intl_sale, aes(x = Months, y = PCS, group = 1)) +
+  stat_summary(fun = sum, geom = "line", color = "#009E73", size = 1.2) +
+  labs(
+    title = "Monthly Quantity Trend for International Sales",
+    x = "Month",
+    y = "Total Quantity Sold (PCS)"
+  ) +
+  theme_minimal()
+
+```
+
+The two trend lines display clear **seasonal patterns** in international sales performance. Both **gross revenue** and **quantity sold (PCS)** follow similar trajectories, peaking during **October** and **February**, with noticeable declines in **December–January**.  
+
+- The **parallel movement** between revenue and quantity indicates that higher order volumes directly drive total revenue, implying relatively stable pricing strategies across months.  
+- The **December–January decline** may reflect seasonal slowdowns in export activity or fulfillment constraints during post-holiday periods.  
+- The **October surge** suggests a strong pre-holiday or festive season demand, marking it as a critical window for international sales and promotional focus.  
+
+From a business standpoint, these insights emphasize the need for **proactive inventory allocation, marketing alignment, and logistical readiness** during high-demand months to capture seasonal revenue spikes efficiently.
+
+## Customer-Level Revenue Analysis
+
+To complement the monthly trend analysis, this section focuses on identifying **which international customers generate the highest total revenue**.  
+By aggregating sales performance at the customer level, we can pinpoint key buyers driving overall profitability in the international market.  
+
+This analysis directly supports the business objective of understanding **revenue concentration and customer dependency** — enabling the company to strengthen relationships with top-performing clients and identify opportunities for market diversification.
+
+```{r}
+# --- Top International Customers by Total Revenue ---
+
+intl_sale %>%
+  group_by(CUSTOMER) %>%
+  summarise(total_revenue = sum(`GROSS AMT`, na.rm = TRUE)) %>%
+  arrange(desc(total_revenue)) %>%
+  slice_head(n = 10) %>%
+  ggplot(aes(x = reorder(CUSTOMER, total_revenue), y = total_revenue, fill = CUSTOMER)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  labs(
+    title = "Top 10 International Customers by Total Revenue",
+    x = "Customer",
+    y = "Total Revenue (₹)"
+  ) +
+  theme_minimal()
+
+```
+
+The chart reveals that a small group of customers accounts for the majority of international sales revenue.  
+**Mulberries Boutique** leads as the top buyer, followed by **Amani Concept Trading LLC (KAPDA)** and **Vaharsha Boutique**, together forming a substantial share of total exports.  
+
+This concentration indicates a **high dependency on a few key accounts**, which underscores the importance of maintaining strong partnerships and consistent service quality for these clients.  
+At the same time, expanding outreach to smaller buyers could help **reduce revenue risk and stabilize future growth** in the international segment.
+
+# Overall Business Insight Summary
+
+Across all three datasets—**P&L Combined**, **Amazon Success**, and **International Sales**—the analysis provides a comprehensive view of e-commerce profitability and operational drivers.
+
+## P&L Summary — Descriptive + Predictive Insights
+
+**1. Descriptive Analysis — Market & Profitability Patterns**
+
+The descriptive analysis revealed that profitability across platforms, categories, and catalogs is **structurally patterned rather than random or seasonal**.  
+- **Platform-Level Trends:** Amazon and Amafba showed the **highest average arbitrage profit margins (~2%)**, followed by Flipkart and Limeroad. Myntra displayed the **lowest margins (~1.1%)**, indicating tighter pricing competition.  
+- **Product Categories:** Profit concentration was **category-anchored**, with *Kurta* and *Kurta Sets* consistently outperforming other segments. Margins remained stable between 2021 and 2022, confirming that **time variation contributes little to profit change**.  
+- **Catalog Drivers:** Within categories, catalogs such as **Breeze-4**, **Moments**, and **Colors-8** emerged as the **top profit generators**, achieving margins above 5–8%. Others (e.g., Mix, Surmaya) underperformed, showing limited price variation and potential outdated stock.  
+- **Cross-Platform Dynamics:** High correlation among major platforms (e.g., Myntra–Paytm–Limeroad, *r* ≈ 0.8–0.9) suggests synchronized price movements and narrow arbitrage gaps. However, moderate divergence on select platforms like Ajio indicates **opportunities for platform-specific pricing differentiation**.  
+
+Overall, these findings show that **profitability is catalog-concentrated, category-anchored, and pricing-driven**, forming a structurally stable marketplace with predictable margin behaviors in the 1–2% band.
+
+---
+
+**2. Predictive Analysis — Model-Based Insights**
+
+The predictive modeling phase deepened these observations by identifying **statistical drivers of profitability** and validating business hypotheses:  
+- **Baseline Logistic Regression** confirmed directionality but suffered from **perfect separation and multicollinearity**, producing no real predictive insight.  
+- **Regularized Models (LASSO & Ridge)** stabilized estimation and exposed key profitability levers:  
+  - `price_ratio` (selling-to-cost ratio) as the **dominant positive driver**.  
+  - `catalog` features (e.g., *Colors-7*, *Rozana*) as **consistent high-margin contributors**.  
+- **Decision Tree Analysis** uncovered interpretable **pricing thresholds** (e.g., `amazon_mrp < 2173`, `limeroad_mrp ≥ 2396`) that segment profit outcomes by platform and catalog, laying the foundation for **dynamic pricing strategies**.  
+- **Random Forest Ensemble** achieved the most robust results, validating that **historical MRP**, **catalog grouping**, and **Amazon-linked MRPs** are the **core profitability predictors**, while `size_variant` and `year` remain negligible.  
+
+This confirms that **profitability is structural, not seasonal**, and primarily depends on *price anchoring, catalog identity, and platform alignment*.
+
+---
+
+**3. Strategic Takeaways and Business Implications**
+
+Integrating descriptive and predictive findings yields a unified profitability framework for e-commerce decision-making:  
+- **Pricing Optimization:** Adjusting `mrp_old` and platform-specific MRP bands (especially Amazon) can directly improve margin yield.  
+- **Catalog Management:** Prioritize high-margin catalogs (e.g., *Breeze-4*, *Moments*, *Colors-8*) while auditing or retiring low-margin ones (*Mix*, *Surmaya*).  
+- **Cross-Platform Coordination:** Maintain synchronized pricing across high-correlation platforms while exploiting differentiation opportunities where correlation weakens (e.g., Ajio).  
+- **Operational Forecasting:** Use Ridge for stability and Random Forest for deployment to continuously forecast and monitor profit drivers.  
+
+In essence, the combined P&L analysis establishes a **data-driven profitability intelligence system**, linking descriptive margin behavior with predictive modeling precision — enabling **dynamic pricing, smarter catalog curation, and sustained cross-platform profit resilience**.
+
+
+## Amazon Success Summary — Fulfillment, Product, and Operational Insights
+
+**1. Fulfillment & Sales Behavior**
+
+The Amazon performance analysis demonstrates that **operational fulfillment strategy and product structure** are central to sales stability and customer satisfaction.  
+
+- **Fulfillment Type Performance:**  
+  Fulfilled by Amazon (FBA) processes **nearly twice the number of orders** as Merchant Fulfilled, confirming FBA’s dominance in logistics scalability and seller adoption. This operational preference reflects Amazon’s reliability in integrated warehousing, courier coordination, and delivery execution.  
+
+- **Revenue Distribution:**  
+  Median order values are similar across fulfillment types, but **FBA orders exhibit a tighter, more predictable revenue spread**, whereas Merchant Fulfilled shows **higher variance and extreme outliers**, suggesting occasional large transactions but inconsistent throughput.  
+
+- **Courier Reliability:**  
+  FBA achieves a **higher shipped-to-unshipped ratio**, highlighting superior **delivery consistency and completion rates**. Merchant Fulfilled orders show more pending or delayed shipments, likely due to third-party coordination constraints.  
+
+Overall, these patterns confirm that **FBA ensures operational reliability and stable earnings**, while Merchant Fulfilled channels serve **niche or bulk order segments** with greater variability in performance.
+
+---
+
+**2. Product Performance — Category and Size Dynamics**
+
+Product-level analysis reveals that **sales concentration and inventory efficiency** are driven by a few dominant categories and specific customer size ranges.  
+
+- **Category-Level Trends:**  
+  *Set* and *Kurta* categories generate the **highest total revenue**, underlining their importance to Amazon’s apparel segment.  
+  *Sets* stand out for **premium pricing (₹800+ average order value)** and strong market appeal, while *Kurtas* maintain **consistent high-volume turnover** through affordability and accessibility.  
+
+- **Size Distribution Patterns:**  
+  The majority of units sold fall within **M, L, and XL**, representing the commercial “core” of active demand. Smaller (XS–S) and extended (3XL–6XL) sizes display limited turnover, indicating potential inventory inefficiencies.  
+
+Together, these insights demonstrate that **category leadership and size alignment** are key drivers of sustained revenue growth within Amazon’s apparel ecosystem.
+
+---
+
+**3. Strategic Takeaways and Business Implications**
+
+Integrating fulfillment and product findings presents a clear roadmap for sustaining Amazon’s operational advantage:  
+
+- **Fulfillment Optimization:**  
+  Continue leveraging **FBA as the primary logistics backbone**, ensuring reliability, scalability, and predictable performance. Retain **Merchant Fulfilled** for low-frequency, high-margin, or regional inventory that benefits from flexibility.  
+
+- **Revenue Stability:**  
+  Use FBA’s consistent revenue distribution for **forecasting accuracy and pricing control**, while managing Merchant channels with enhanced quality monitoring to reduce delivery delays.  
+
+- **Product & Inventory Strategy:**  
+  - Prioritize *Set* and *Kurta* categories in marketing and restocking to maximize contribution to total revenue.  
+  - Maintain optimal inventory across **M–XL** size ranges to align supply with core consumer demand.  
+  - Rationalize low-performing SKUs (XS–3XL) through bundling or clearance to minimize holding costs.  
+
+In essence, Amazon’s success model combines **fulfillment excellence, demand-driven product strategy, and category leadership** — delivering a unified approach to **revenue optimization, reliability, and long-term operational efficiency**.
+
+
+## International Sales Summary — Seasonal Performance and Client Concentration
+
+**1. Seasonal Trends and Revenue Behavior**
+
+The international dataset reveals **distinct seasonal fluctuations** in both total revenue and quantity sold, reflecting cyclical export demand patterns.  
+- **Monthly Trends:** Revenue and quantity trajectories move in parallel, peaking notably in **October** and **February**, followed by sharp declines in **December–January**. This synchronicity suggests that sales volume directly drives revenue, indicating **stable and consistent pricing strategies**.  
+- **Seasonal Interpretation:**  
+  - The **October surge** likely corresponds to pre-holiday or festival-related bulk orders.  
+  - The **February rebound** may reflect replenishment cycles or post-season trade resumption.  
+  - The **December–January trough** indicates export slowdowns, possibly due to logistical congestion or reduced market activity post-holidays.  
+
+Overall, these patterns demonstrate that **international performance is seasonally driven**, with predictable high-demand windows and temporary slowdowns shaped by global retail cycles.
+
+---
+
+**2. Customer Portfolio — Revenue Concentration and Dependency Risk**
+
+Customer-level analysis highlights a **high concentration of international sales among a few key buyers**, indicating both opportunity and vulnerability:  
+- **Top Clients:** *Mulberries Boutique* leads as the dominant buyer, followed by *Amani Concept Trading LLC (KAPDA)* and *Vaharsha Boutique*. Together, they represent a **substantial majority of total export revenue**.  
+- **Client Distribution:** The sharp drop-off after the top three customers indicates **limited diversification**, with smaller clients contributing minimally to total sales.  
+
+This suggests that while strong partnerships with large clients sustain revenue stability, the business remains **exposed to concentration risk** — where the loss or inactivity of one key client could materially affect international turnover.
+
+---
+
+### **3. Strategic Takeaways and Business Implications**
+
+Combining seasonal and client-level insights establishes a clear operational focus for sustaining growth and mitigating volatility:  
+- **Seasonal Readiness:** Align inventory buildup, logistics scheduling, and export documentation to **anticipate October and February surges**, ensuring stock availability and timely fulfillment.  
+- **Client Retention:** Deepen engagement with top-tier clients through loyalty programs, early-bird seasonal offers, and co-marketing collaborations to maintain volume commitments.  
+- **Revenue Diversification:** Expand outreach to mid-tier and smaller international buyers to **broaden the revenue base** and stabilize long-term growth against concentration risks.  
+- **Operational Forecasting:** Integrate these temporal and client insights into sales forecasting models to optimize demand planning and working capital allocation.
+
+In summary, the international sales division operates within a **predictable, seasonally fluctuating ecosystem** — driven by a small but powerful buyer network. Strategic balancing between **seasonal agility and client diversification** will be essential for maintaining profitability and resilience in future cycles.
+
+
+# Final Conclusion — Integrated Business Intelligence Outlook
+
+The combined P&L, Amazon, and International analyses converge on a unified theme:  
+**profitability and sales performance in the e-commerce ecosystem are structurally determined, operationally anchored, and predictably cyclical.**
+
+Across all datasets, three cross-cutting principles emerge:
+
+1. **Structural Profitability Stability:**  
+   Profit margins are not random or seasonal but consistently shaped by platform economics, catalog identity, and price anchoring.  
+   Predictive models reinforce this by confirming that historical MRP and catalog grouping remain the strongest profitability predictors, enabling precise profit forecasting and margin control.
+
+2. **Operational Excellence through Fulfillment Strategy:**  
+   Amazon’s FBA network exemplifies the operational gold standard — scalability, reliability, and fulfillment speed directly translate into revenue consistency and customer trust.  
+   Leveraging FBA while strategically positioning Merchant Fulfilled operations for flexible or region-specific inventory provides an optimal hybrid model balancing efficiency and adaptability.
+
+3. **Market Responsiveness and Seasonal Adaptation:**  
+   International sales exhibit cyclic surges tied to retail and festival calendars (October–February), underscoring the need for agile inventory buildup, export scheduling, and capacity management during peak months.  
+   These cycles are predictable, allowing proactive forecasting rather than reactive adjustment.
+
+---
+
+### Strategic Integration
+
+When synthesized, these insights form a **data-driven operational intelligence framework** for decision-makers:
+- **Dynamic Pricing:** Employ predictive thresholds and platform-specific MRP tuning to sustain competitive yet profitable pricing strategies.  
+- **Catalog & Inventory Prioritization:** Concentrate capital and marketing efforts on proven high-margin catalogs (*Breeze-4*, *Moments*, *Colors-8*) and dominant categories (*Set*, *Kurta*), while systematically phasing out underperforming SKUs.  
+- **Cross-Platform & Cross-Market Coordination:** Align domestic and international operations by using Amazon FBA’s reliability as a template for export readiness and multi-market standardization.  
+- **Client and Revenue Diversification:** Mitigate dependency risk in international trade by cultivating secondary and emerging buyers, stabilizing long-term export growth.
+
+---
+
+### Forward Outlook
+
+The project establishes a scalable analytical foundation — one that links **descriptive pattern discovery, predictive modeling, and operational application** into a single performance ecosystem.  
+Future work can extend this framework toward:
+- Real-time profit monitoring dashboards using **automated Random Forest pipelines**;  
+- Demand forecasting through **time-series and seasonal ARIMA models**;  
+- and integrated pricing simulators for multi-platform synchronization.
+
+Ultimately, the findings confirm that **sustainable profitability in e-commerce emerges not from chance, but from data discipline** — where each operational layer, from pricing to fulfillment, reinforces a self-correcting, insight-driven business model built for long-term growth.
