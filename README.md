@@ -114,11 +114,12 @@ E-Commerce-Analytics/
 │   └── Archive_unused.zip
 ├── scripts/
 │   ├── E-Commerce_Proposal.Rmd
-│   ├── E-Commerce_Preparation.Rmd
-│   └── E-Commerce_Analysis_&_Visualization.Rmd
+│   ├── E-Commerce Preparation.Rmd
+│   ├── E-Commerce Analysis & Visualization.Rmd
+│   └── style.css
 ├── outputs/
-│   ├── E-Commerce-Proposal.html
-│   ├── E-Commerce-Proposal.pdf
+│   ├── E-Commerce_Proposal.html
+│   ├── E-Commerce_Proposal.pdf
 │   ├── E-Commerce-Preparation.html
 │   ├── E-Commerce-Analysis---Visualization.html
 │   └── E-Commerce Project.pptx
