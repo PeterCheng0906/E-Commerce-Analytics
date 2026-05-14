@@ -157,9 +157,13 @@ E-Commerce-Analytics/
 ## Author
 **Peter Cheng**  
 M.S. Data Science (Johns Hopkins University)
+
 M.A. German Studies | Specialization In NLP & Textual Data Science (Stanford University)
+
 [cyf0906@stanford.edu]  
+
 [pcheng20@jh.edu] 
+
 California, USA  
 
 ---
